@@ -13,6 +13,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Tmux } from "@agent-master/tmux";
 
 import { codexHooksTrusted } from "../../src/drivers/codex.ts";
+import { forgetTestSessions } from "./cleanup.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../../../..");
 const cli = resolve(import.meta.dirname, "../../src/cli.ts");
@@ -20,6 +21,7 @@ const workDir = join(repoRoot, ".state", `e2e-${process.pid}`);
 const tmux = new Tmux({ socketName: `am-e2e-agents-${process.pid}` });
 const kinds = (process.env.AM_E2E_KINDS ?? "opencode,claude,codex").split(",");
 let env: NodeJS.ProcessEnv;
+const startedAt = Date.now();
 
 interface Result {
   code: number;
@@ -80,7 +82,10 @@ before(async () => {
   env = { ...process.env, TMUX: `${await tmux.socketPath()},0,0`, TMUX_PANE: lead };
 });
 
-after(() => tmux.killServer());
+after(async () => {
+  await tmux.killServer();
+  await forgetTestSessions([workDir, codexDir], startedAt);
+});
 
 for (const kind of kinds) {
   const name = `e2e-${kind}`;

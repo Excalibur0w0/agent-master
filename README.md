@@ -124,3 +124,5 @@ pnpm test:e2e        # 真实 agent，花少量模型额度：
                      #   shell-ask：需要 Docker，起 remote-sim 容器
 pnpm sim:up / sim:down
 ```
+
+agent 的 e2e 在独立目录（`.state/e2e-*`、临时目录）里跑，结束时按 cwd 精确删除自己在 Claude / Codex / opencode 历史里留下的会话，不会出现在你的 resume 列表里。

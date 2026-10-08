@@ -1,0 +1,20 @@
+{
+  "name": "agent-master",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "pnpm -r --if-present test",
+    "test:e2e": "pnpm -r --if-present test:e2e",
+    "typecheck": "tsc -p tsconfig.json",
+    "sim:up": "pnpm --filter @agent-master/remote-sim run up",
+    "sim:down": "pnpm --filter @agent-master/remote-sim run down"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  }
+}

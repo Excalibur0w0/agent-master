@@ -1,0 +1,18 @@
+{
+  "name": "@agent-master/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Start, drive and coordinate coding agents (Claude Code, Codex, opencode) in tmux panes, without reading the screen.",
+  "bin": {
+    "am": "./bin/am"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\"",
+    "test:e2e": "node --test --test-concurrency=1 \"test/e2e/*.test.ts\""
+  },
+  "dependencies": {
+    "@agent-master/tmux": "workspace:*",
+    "smol-toml": "^1.9.0"
+  }
+}

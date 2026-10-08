@@ -1,0 +1,11 @@
+{
+  "name": "@agent-master/remote-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Docker container that plays the remote Linux server you ssh into.",
+  "scripts": {
+    "up": "sh scripts/up.sh",
+    "down": "sh scripts/down.sh",
+    "ssh": "ssh -F .state/ssh_config remote-sim"
+  }
+}

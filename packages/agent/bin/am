@@ -1,0 +1,4 @@
+#!/bin/sh
+# Resolve symlinks (am install links this file into ~/.local/bin).
+self=$(readlink -f "$0")
+exec node --disable-warning=ExperimentalWarning "$(dirname "$self")/../src/cli.ts" "$@"

@@ -1,0 +1,17 @@
+{
+  "name": "@agent-master/shell-ask",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Describe what you want, get one shell command typed into the current tmux pane (local or over ssh).",
+  "bin": {
+    "am-ask": "./bin/am-ask"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\"",
+    "test:e2e": "node --test \"test/e2e/*.test.ts\""
+  },
+  "dependencies": {
+    "@agent-master/tmux": "workspace:*"
+  }
+}

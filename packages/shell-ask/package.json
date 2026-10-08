@@ -2,6 +2,7 @@
   "name": "@agent-master/shell-ask",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Describe what you want, get one shell command typed into the current tmux pane (local or over ssh).",
   "bin": {

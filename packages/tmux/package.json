@@ -2,6 +2,7 @@
   "name": "@agent-master/tmux",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Typed wrapper around the tmux CLI and pane process inspection.",
   "exports": {

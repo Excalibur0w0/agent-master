@@ -2,6 +2,7 @@
   "name": "@agent-master/remote-sim",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Docker container that plays the remote Linux server you ssh into.",
   "scripts": {
     "up": "sh scripts/up.sh",

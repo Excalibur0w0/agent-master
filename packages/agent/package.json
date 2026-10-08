@@ -2,6 +2,7 @@
   "name": "@agent-master/agent",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Start, drive and coordinate coding agents (Claude Code, Codex, opencode) in tmux panes, without reading the screen.",
   "bin": {

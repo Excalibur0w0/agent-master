@@ -92,7 +92,7 @@ export async function listRecords(tmux: Tmux): Promise<AgentRecord[]> {
 
 export class AgentNotFound extends Error {
   constructor(target: string) {
-    super(`没有找到 agent「${target}」（用 am list 查看）`);
+    super(`no agent named "${target}" (see am list)`);
     this.name = "AgentNotFound";
   }
 }

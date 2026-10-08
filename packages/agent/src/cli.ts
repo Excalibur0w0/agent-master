@@ -23,28 +23,29 @@ import { AmError } from "./drivers/index.ts";
 import { installGlobal, installProject, uninstallGlobal } from "./install.ts";
 import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
 
-const USAGE = `am — 在 tmux 里启动、驱动、协同 coding agent（claude / codex / opencode）
+const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode) in tmux
 
   am start <name> --kind <claude|codex|opencode> [--cwd DIR] [--model M] [--env K=V]...
-           [--window] [--timeout MS] [-- <agent 原生参数>]
-                                        默认开在独立的 tmux 会话 am-<name>；--window 开在当前会话的新窗口
-  am list                               所有 agent 及状态
-  am open <name>                        切到它的 tmux 会话（tmux 外则打印 attach 命令）
-  am status <name>                      单个 agent 的状态
+           [--window] [--timeout MS] [-- <native agent args>]
+                                        Runs in its own tmux session am-<name>; --window uses a new window of the current session
+  am list                               All agents and their states
+  am open <name>                        Switch to its tmux session (outside tmux, print the attach command)
+  am status <name>                      One agent's state
   am prompt <name> <text|-> [--wait] [--timeout MS]
-                                        发送任务（- 表示从 stdin 读）；--wait 等到 idle/blocked
+                                        Send a task (- reads stdin); --wait returns once idle or blocked
   am wait <name> [--until idle,blocked] [--timeout MS]
-  am read <name>                        读取它最近一轮的最终回复
-  am approve <name> [--always]          批准它在等的权限请求
-  am deny <name>                        拒绝
-  am interrupt <name>                   中断当前这一轮
-  am keys <name> <key>...               直接发按键（tmux 键名，如 Enter Escape C-c）
-  am stop <name>                        关闭它（连同它的会话）
+                                        Wait for a state
+  am read <name>                        Final reply of its latest turn
+  am approve <name> [--always]          Approve its pending permission request
+  am deny <name>                        Deny it
+  am interrupt <name>                   Interrupt the current turn
+  am keys <name> <key>...               Send raw keys (tmux key names such as Enter Escape C-c)
+  am stop <name>                        Close it together with its session
   am install [--project DIR] | am uninstall
-                                        安装 am 命令和显式调用入口（/am、$am）；--project 只装到该项目
+                                        Install the am command and the explicit entry points (/am, $am); --project for one project only
 
-  <name> 也可以是 pane id（如 %12）。所有命令都支持 --json。
-  状态：starting / idle / working / blocked / exited / unknown`;
+  <name> can also be a pane id (e.g. %12). Every command accepts --json.
+  States: starting / idle / working / blocked / exited / unknown`;
 
 function age(startedAt: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
@@ -54,7 +55,7 @@ function age(startedAt: number): string {
 }
 
 function table(agents: AgentView[]): string {
-  if (!agents.length) return "（没有 agent）";
+  if (!agents.length) return "no agents";
   const rows = [["NAME", "KIND", "STATE", "SESSION", "AGE", "DETAIL"], ...agents.map((a) => [a.name, a.kind, a.state, a.tmuxSession, age(a.startedAt), a.detail])];
   const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => [...r[i]].length)));
   return rows.map((r) => r.map((cell, i) => cell.padEnd(widths[i])).join("  ").trimEnd()).join("\n");
@@ -83,19 +84,19 @@ async function main(argv: string[]): Promise<number> {
   const out = (data: unknown, text: string) => process.stdout.write(`${values.json ? JSON.stringify(data) : text}\n`);
   const tmux = new Tmux();
   const target = () => {
-    if (!positionals[0]) throw new AmError("usage", "缺少 agent 名字");
+    if (!positionals[0]) throw new AmError("usage", "missing agent name");
     return positionals[0];
   };
 
   switch (command) {
     case "start": {
       const kind = values.kind as AgentKind;
-      if (!(AGENT_KINDS as readonly string[]).includes(kind)) throw new AmError("usage", `--kind 需要是 ${AGENT_KINDS.join(" / ")}`);
+      if (!(AGENT_KINDS as readonly string[]).includes(kind)) throw new AmError("usage", `--kind must be one of: ${AGENT_KINDS.join(", ")}`);
       const placement = values.window ? "window" : "session";
       const env: Record<string, string> = {};
       for (const pair of values.env ?? []) {
         const at = pair.indexOf("=");
-        if (at <= 0) throw new AmError("usage", `--env 需要 KEY=VALUE 格式：${pair}`);
+        if (at <= 0) throw new AmError("usage", `--env expects KEY=VALUE, got: ${pair}`);
         env[pair.slice(0, at)] = pair.slice(at + 1);
       }
       const agent = await startAgent(tmux, {
@@ -107,9 +108,9 @@ async function main(argv: string[]): Promise<number> {
         args: positionals.slice(1),
         placement,
         timeoutMs,
-        warn: (message) => process.stderr.write(`am: 注意：${message}\n`),
+        warn: (message) => process.stderr.write(`am: warning: ${message}\n`),
       });
-      out(agent, `${agent.name} 已就绪（${agent.kind}，tmux 会话 ${agent.tmuxSession}；查看：am open ${agent.name}）`);
+      out(agent, `${agent.name} is ready (${agent.kind}, tmux session ${agent.tmuxSession}; watch it with: am open ${agent.name})`);
       return 0;
     }
     case "open":
@@ -126,16 +127,17 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "prompt": {
+      const name = target();
       const text = positionals[1] === "-" ? readFileSync(0, "utf8") : positionals.slice(1).join(" ");
-      if (!text.trim()) throw new AmError("usage", "缺少要发送的内容");
-      const agent = await promptAgent(tmux, target(), text, { wait: values.wait, timeoutMs });
-      out(agent, values.wait ? `${agent.name}: ${agent.state}${agent.detail ? `（${agent.detail}）` : ""}` : `已发送给 ${agent.name}`);
+      if (!text.trim()) throw new AmError("usage", "nothing to send");
+      const agent = await promptAgent(tmux, name, text, { wait: values.wait, timeoutMs });
+      out(agent, values.wait ? `${agent.name}: ${agent.state}${agent.detail ? ` (${agent.detail})` : ""}` : `sent to ${agent.name}`);
       return 0;
     }
     case "wait": {
       const until = values.until ? (values.until.split(",") as AgentState[]) : undefined;
       const agent = await waitAgent(tmux, target(), until, timeoutMs);
-      out(agent, `${agent.name}: ${agent.state}${agent.detail ? `（${agent.detail}）` : ""}`);
+      out(agent, `${agent.name}: ${agent.state}${agent.detail ? ` (${agent.detail})` : ""}`);
       return 0;
     }
     case "read": {
@@ -145,25 +147,25 @@ async function main(argv: string[]): Promise<number> {
     }
     case "approve":
       await approveAgent(tmux, target(), values.always ? "always" : "once");
-      out({ ok: true }, "已批准");
+      out({ ok: true }, "approved");
       return 0;
     case "deny":
       await denyAgent(tmux, target());
-      out({ ok: true }, "已拒绝");
+      out({ ok: true }, "denied");
       return 0;
     case "interrupt": {
       const agent = await interruptAgent(tmux, target());
-      out(agent, `已中断，${agent.name}: ${agent.state}`);
+      out(agent, `interrupted; ${agent.name}: ${agent.state}`);
       return 0;
     }
     case "keys":
-      if (positionals.length < 2) throw new AmError("usage", "缺少按键");
+      if (positionals.length < 2) throw new AmError("usage", "missing keys");
       await sendKeys(tmux, target(), positionals.slice(1));
-      out({ ok: true }, "已发送");
+      out({ ok: true }, "sent");
       return 0;
     case "stop":
       await stopAgent(tmux, target());
-      out({ ok: true }, `已关闭 ${target()}`);
+      out({ ok: true }, `stopped ${target()}`);
       return 0;
     case "install": {
       const report = values.project ? await installProject(resolve(values.project)) : await installGlobal();
@@ -179,7 +181,7 @@ async function main(argv: string[]): Promise<number> {
       process.stdout.write(`${USAGE}\n`);
       return 0;
     default:
-      throw new AmError("usage", `未知命令 ${command}\n\n${USAGE}`);
+      throw new AmError("usage", `unknown command: ${command}\n\n${USAGE}`);
   }
 }
 

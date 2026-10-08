@@ -60,7 +60,7 @@ export const claude: Driver = {
 
   async preflight(cwd) {
     if ((await isTrusted(cwd)) === false) {
-      return [`Claude 还没信任过 ${cwd}：启动时会停在信任确认框，需要你到它的 tmux 会话里（am open）确认一次`];
+      return [`Claude has not trusted ${cwd} yet: it will stop at the trust dialog on start; confirm it once in its tmux session (am open)`];
     }
     return [];
   },
@@ -72,11 +72,11 @@ export const claude: Driver = {
   async waitReady(_tmux, reload, deadline) {
     const ready = await poll(async () => {
       const record = await reload();
-      if (record.paneDead) throw new AmError("exited", "claude 启动后退出了");
+      if (record.paneDead) throw new AmError("exited", "claude exited right after starting");
       return record.event === "SessionStart" || record.state === "idle" ? true : undefined;
     }, deadline);
     if (!ready) {
-      throw new AmError("start_timeout", "claude 没有在时限内启动完成（可能停在信任/登录等确认框，用 am open 打开它的会话看一下）");
+      throw new AmError("start_timeout", "claude did not finish starting in time (it may be waiting at a trust or login dialog; check its session with am open)");
     }
     await sleep(500);
   },
@@ -98,12 +98,12 @@ export const claude: Driver = {
   async readReply(record) {
     const { text, truncated } = await readFrom(record.transcript, record.offset);
     const reply = claudeFinalReply(jsonLines(text));
-    if (!reply && truncated) throw new AmError("reply_unavailable", "这一轮的对话记录超过 32MB，读不到完整回复；让它把结果写进文件再读");
+    if (!reply && truncated) throw new AmError("reply_unavailable", "this turn's transcript is over 32MB, so the full reply cannot be read; ask the agent to write its result to a file and read that");
     return reply;
   },
 
   async approve(tmux, record, scope) {
-    if (scope === "always") throw new AmError("unsupported", "claude 只支持单次批准（am approve 不带 --always）");
+    if (scope === "always") throw new AmError("unsupported", "claude only supports one-time approval (am approve without --always)");
     await tmux.sendKeys(record.paneId, "Enter");
   },
 

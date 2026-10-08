@@ -22,7 +22,7 @@ function freePort(): Promise<number> {
 }
 
 function api(record: AgentRecord): OpencodeApi {
-  if (!record.url) throw new AmError("no_api", `${record.name} 没有记录 opencode 的服务地址`);
+  if (!record.url) throw new AmError("no_api", `${record.name} has no recorded opencode server address`);
   return new OpencodeApi(record.url, record.auth);
 }
 
@@ -33,7 +33,7 @@ function api(record: AgentRecord): OpencodeApi {
  */
 async function paneSession(client: OpencodeApi, record: AgentRecord): Promise<string> {
   const session = record.session || Object.keys(await client.status())[0];
-  if (!session) throw new AmError("no_session", `还不确定 ${record.name} 在用哪个会话（它还没通过 am prompt 收到过任务）`);
+  if (!session) throw new AmError("no_session", `not sure yet which session ${record.name} is in (it has not received a task through am prompt)`);
   return session;
 }
 
@@ -61,10 +61,10 @@ export const opencode: Driver = {
   async waitReady(_tmux, reload, deadline) {
     const ready = await poll(async () => {
       const record = await reload();
-      if (record.paneDead) throw new AmError("exited", "opencode 启动后退出了");
+      if (record.paneDead) throw new AmError("exited", "opencode exited right after starting");
       return (await api(record).ready()) ? true : undefined;
     }, deadline);
-    if (!ready) throw new AmError("start_timeout", "opencode 的服务没有在时限内就绪");
+    if (!ready) throw new AmError("start_timeout", "opencode's server did not become ready in time");
     await sleep(TUI_SETTLE_MS);
   },
 
@@ -120,13 +120,13 @@ export const opencode: Driver = {
 
   async approve(_tmux, record, scope) {
     const [pending] = await api(record).permissions();
-    if (!pending) throw new AmError("not_blocked", `${record.name} 没有待批准的权限请求`);
+    if (!pending) throw new AmError("not_blocked", `${record.name} has no pending permission request`);
     await api(record).replyPermission(pending.id, scope);
   },
 
   async deny(_tmux, record) {
     const [pending] = await api(record).permissions();
-    if (!pending) throw new AmError("not_blocked", `${record.name} 没有待批准的权限请求`);
+    if (!pending) throw new AmError("not_blocked", `${record.name} has no pending permission request`);
     await api(record).replyPermission(pending.id, "reject");
   },
 

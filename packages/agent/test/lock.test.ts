@@ -19,7 +19,7 @@ test("only one am prompt at a time can type into an agent", async () => {
   const results = await Promise.allSettled([acquireSendLock(tmux, pane, "a"), acquireSendLock(tmux, pane, "a"), acquireSendLock(tmux, pane, "a")]);
   const held = results.filter((r) => r.status === "fulfilled");
   assert.equal(held.length, 1, "exactly one concurrent caller gets the lock");
-  assert.ok(results.some((r) => r.status === "rejected" && /另一个 am prompt/.test(String(r.reason))));
+  assert.ok(results.some((r) => r.status === "rejected" && /another am prompt/.test(String(r.reason))));
 
   const token = (held[0] as PromiseFulfilledResult<string>).value;
   await releaseSendLock(tmux, pane, "someone-else");
@@ -42,7 +42,7 @@ test("keystrokes only go out while the lock is held, checked inside tmux", async
   const pane = await tmux.newSession("send", { cwd: dir, command: ["sh", "-c", "cat > out.txt"] });
   const token = await acquireSendLock(tmux, pane, "a");
   await whileLocked(tmux, pane, token, `send-keys -t ${pane} -l -- "held; \\$HOME"`);
-  await assert.rejects(whileLocked(tmux, pane, "not-the-holder", `send-keys -t ${pane} -l -- LEAK`), /失去了发送锁/);
+  await assert.rejects(whileLocked(tmux, pane, "not-the-holder", `send-keys -t ${pane} -l -- LEAK`), /lost the send lock/);
   await tmux.sendKeys(pane, "Enter", "C-d");
   await sleep(300);
   assert.equal(await readFile(join(dir, "out.txt"), "utf8"), "held; $HOME\n");

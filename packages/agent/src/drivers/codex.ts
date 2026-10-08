@@ -141,8 +141,8 @@ export const codex: Driver = {
   async preflight(cwd, args) {
     const config = await readConfig();
     const warnings: string[] = [];
-    if (!codexDirectoryTrusted(config, cwd, await gitRoot(cwd), trustOverrides(args))) warnings.push(`Codex 还没信任过 ${cwd}：启动时会先问是否信任这个目录，需要你到它的 tmux 会话里（am open）确认`);
-    if (!(await codexHooksTrusted(config))) warnings.push("Codex 首次加载 am 的 hooks 时需要你信任一次：到它的 tmux 会话里（am open）选「Trust all and continue」");
+    if (!codexDirectoryTrusted(config, cwd, await gitRoot(cwd), trustOverrides(args))) warnings.push(`Codex has not trusted ${cwd} yet: it will ask whether to trust this directory on start; confirm it in its tmux session (am open)`);
+    if (!(await codexHooksTrusted(config))) warnings.push("Codex asks once to trust am's hooks the first time it loads them: choose \"Trust all and continue\" in its tmux session (am open)");
     return warnings;
   },
 
@@ -161,15 +161,15 @@ export const codex: Driver = {
     // the dialog on the user's behalf, so never report ready before that.
     const trusted = await poll(async () => {
       const record = await reload();
-      if (record.paneDead) throw new AmError("exited", "codex 启动后退出了");
+      if (record.paneDead) throw new AmError("exited", "codex exited right after starting");
       return (await trustAnswered(record)) ? true : undefined;
     }, deadline, 500);
     if (!trusted) {
-      throw new AmError("start_timeout", "codex 在等你确认信任（目录或 am 的 hooks）：用 am open 打开它的会话确认后，再用 am status 查看");
+      throw new AmError("start_timeout", "codex is waiting for you to confirm trust (of the directory or of am's hooks): confirm it in its session (am open), then check am status");
     }
     const { startedAt } = await reload();
     await sleep(Math.max(0, startedAt + STARTUP_SETTLE_MS - Date.now()));
-    if ((await reload()).paneDead) throw new AmError("exited", "codex 启动后退出了");
+    if ((await reload()).paneDead) throw new AmError("exited", "codex exited right after starting");
   },
 
   async status(record) {
@@ -206,12 +206,12 @@ export const codex: Driver = {
       }, Date.now() + 3000, 200);
       reply = later ?? "";
     }
-    if (!reply && truncated) throw new AmError("reply_unavailable", "这一轮的对话记录超过 32MB，读不到完整回复；让它把结果写进文件再读");
+    if (!reply && truncated) throw new AmError("reply_unavailable", "this turn's transcript is over 32MB, so the full reply cannot be read; ask the agent to write its result to a file and read that");
     return reply;
   },
 
   async approve(tmux, record, scope) {
-    if (scope === "always") throw new AmError("unsupported", "codex 只支持单次批准（am approve 不带 --always）");
+    if (scope === "always") throw new AmError("unsupported", "codex only supports one-time approval (am approve without --always)");
     await tmux.sendKeys(record.paneId, "Enter");
   },
 

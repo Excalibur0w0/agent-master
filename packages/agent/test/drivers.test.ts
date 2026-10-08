@@ -188,7 +188,7 @@ test("opencode reads only the pane's own session, never another instance's lates
   try {
     const rec = record({ kind: "opencode", url: quiet.url, auth: "pw", state: "idle" });
     assert.equal(await opencode.readReply({ ...rec, session: "ses_mine" }), "mine");
-    await assert.rejects(opencode.readReply(rec), /还不确定/, "unbound and idle: refuse instead of reading the latest session");
+    await assert.rejects(opencode.readReply(rec), /not sure yet which session/, "unbound and idle: refuse instead of reading the latest session");
     // The busy session captured while confirming a prompt becomes the binding.
     const written: Record<string, string>[] = [];
     const tmuxStub = { setPaneOptions: async (_pane: string, options: Record<string, string>) => void written.push(options) };

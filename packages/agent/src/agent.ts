@@ -57,7 +57,7 @@ async function openPane(tmux: Tmux, options: StartOptions, spawn: { cwd: string;
     return tmux.newWindow(await tmux.display(process.env.TMUX_PANE, "#{session_name}"), spawn.command, { ...spawn, windowName: sessionName(options.name) });
   }
   const session = sessionName(options.name);
-  if (await tmux.hasSession(session)) throw new AmError("session_taken", `tmux 会话 ${session} 已存在（不是 am 管理的 agent），换个名字或先关掉它`);
+  if (await tmux.hasSession(session)) throw new AmError("session_taken", `tmux session ${session} already exists and is not an am agent; pick another name or close it first`);
   // Detached sessions default to 80x24; give the agent's UI room until someone attaches.
   return tmux.newSession(session, { width: 200, height: 50, ...spawn });
 }
@@ -67,7 +67,7 @@ export async function openAgent(tmux: Tmux, target: string): Promise<string> {
   const record = await findRecord(tmux, target);
   if (process.env.TMUX) {
     await tmux.run(["switch-client", "-t", record.paneId]);
-    return `已切换到 ${record.tmuxSession}（prefix + ( 或 prefix + s 切回）`;
+    return `switched to ${record.tmuxSession} (prefix + ( or prefix + s to go back)`;
   }
   return `tmux attach -t ${record.tmuxSession}`;
 }
@@ -109,7 +109,7 @@ function tmuxPath(tmux: Tmux): string {
 
 export async function startAgent(tmux: Tmux, options: StartOptions): Promise<AgentView> {
   const { name, kind } = options;
-  if (!NAME_PATTERN.test(name)) throw new AmError("bad_name", `名字需要匹配 ${NAME_PATTERN}`);
+  if (!NAME_PATTERN.test(name)) throw new AmError("bad_name", `name must match ${NAME_PATTERN}`);
 
   const driver = DRIVERS[kind];
   const cwd = resolve(options.cwd ?? process.cwd());
@@ -125,7 +125,7 @@ export async function startAgent(tmux: Tmux, options: StartOptions): Promise<Age
   let paneId: string;
   let startedAt: number;
   try {
-    if ((await listRecords(tmux)).some((r) => r.name === name)) throw new AmError("name_taken", `已经有一个叫 ${name} 的 agent`);
+    if ((await listRecords(tmux)).some((r) => r.name === name)) throw new AmError("name_taken", `an agent named ${name} already exists`);
     const command = gatedCommand(tmuxPath(tmux), gate, plan.command);
     paneId = await openPane(tmux, options, { cwd, env: { ...options.env, ...plan.env }, command });
     // Measured from here: the agent itself starts once the gate opens below.
@@ -145,7 +145,7 @@ export async function startAgent(tmux: Tmux, options: StartOptions): Promise<Age
   const reload = () =>
     findRecord(tmux, paneId).catch((error) => {
       // Agents run as the pane's command, so a vanished pane means the agent exited.
-      if (error instanceof AgentNotFound) throw new AmError("exited", `${name} 启动后退出了（pane ${paneId} 已关闭）`);
+      if (error instanceof AgentNotFound) throw new AmError("exited", `${name} exited right after starting (pane ${paneId} is closed)`);
       throw error;
     });
   await driver.waitReady(tmux, reload, startedAt + (options.timeoutMs ?? 60_000));
@@ -167,7 +167,7 @@ export async function waitAgent(tmux: Tmux, target: string, until: AgentState[] 
     if (until.includes(current.state) || current.state === "exited") return current;
     return undefined;
   }, deadline);
-  if (!result) throw new AmError("timeout", `等待 ${target} 超时（${timeoutMs}ms）`);
+  if (!result) throw new AmError("timeout", `timed out waiting for ${target} (${timeoutMs}ms)`);
   return result;
 }
 
@@ -191,7 +191,7 @@ export async function acquireSendLock(tmux: Tmux, paneId: string, name: string):
     `#{||:#{==:#{@am_lock},},#{e|<:#{@am_lock_ts},${now - LOCK_TTL_S}}}`,
     `set-option -p -t ${paneId} @am_lock ${token} ; set-option -p -t ${paneId} @am_lock_ts ${now}`,
   ]);
-  if ((await tmux.display(paneId, "#{@am_lock}")) !== token) throw new AmError("agent_busy", `另一个 am prompt 正在给 ${name} 发送`);
+  if ((await tmux.display(paneId, "#{@am_lock}")) !== token) throw new AmError("agent_busy", `another am prompt is sending to ${name}`);
   return token;
 }
 
@@ -200,9 +200,9 @@ export async function releaseSendLock(tmux: Tmux, paneId: string, token: string)
 }
 
 function assertIdle(record: AgentRecord, current: AgentView): void {
-  if (current.state === "blocked") throw new AmError("agent_blocked", `${record.name} 正在等待确认（${current.detail}），先处理：am approve / am deny`);
-  if (current.state === "working") throw new AmError("agent_busy", `${record.name} 还在工作，先 am wait ${record.name}`);
-  if (current.state !== "idle") throw new AmError("agent_not_ready", `${record.name} 当前状态是 ${current.state}，不能发送`);
+  if (current.state === "blocked") throw new AmError("agent_blocked", `${record.name} is waiting for a decision (${current.detail}); handle it first: am approve / am deny`);
+  if (current.state === "working") throw new AmError("agent_busy", `${record.name} is still working; run am wait ${record.name} first`);
+  if (current.state !== "idle") throw new AmError("agent_not_ready", `${record.name} is ${current.state} and cannot take a prompt`);
 }
 
 /**
@@ -237,7 +237,7 @@ const LOCK_LOST = "__am_lock_lost__";
  */
 export async function whileLocked(tmux: Tmux, paneId: string, token: string, command: string): Promise<void> {
   const out = await tmux.run(["if-shell", "-F", "-t", paneId, `#{==:#{@am_lock},${token}}`, command, `display-message -p ${LOCK_LOST}`]);
-  if (out.includes(LOCK_LOST)) throw new AmError("lock_lost", "发送时失去了发送锁（另一个 am prompt 接手了），已停止");
+  if (out.includes(LOCK_LOST)) throw new AmError("lock_lost", "lost the send lock while sending (another am prompt took over); stopped");
 }
 
 async function submitPrompt(tmux: Tmux, record: AgentRecord, text: string, token: string): Promise<void> {
@@ -274,7 +274,7 @@ async function submitPrompt(tmux: Tmux, record: AgentRecord, text: string, token
   // No automatic resend: without proof the text never reached the input box,
   // typing it again could duplicate it or land its Enter on a dialog.
   if (!(await accepted(driver.acceptTimeoutMs))) {
-    throw new AmError("prompt_stalled", `${record.name} 没有确认收到 prompt，用 am open ${record.name} 看一下，别直接重发`);
+    throw new AmError("prompt_stalled", `${record.name} did not confirm receiving the prompt; check it with am open ${record.name} instead of resending`);
   }
   await driver.afterAccepted?.(tmux, record, after);
 }
@@ -286,7 +286,7 @@ export async function readReply(tmux: Tmux, target: string): Promise<string> {
 
 export async function approveAgent(tmux: Tmux, target: string, scope: "once" | "always" = "once"): Promise<void> {
   const record = await findRecord(tmux, target);
-  if ((await view(record)).state !== "blocked") throw new AmError("not_blocked", `${record.name} 没有在等待确认`);
+  if ((await view(record)).state !== "blocked") throw new AmError("not_blocked", `${record.name} is not waiting for a decision`);
   await DRIVERS[record.kind].approve(tmux, record, scope);
   if (record.kind !== "opencode" && /^[A-Za-z0-9_-]*$/.test(record.pending)) {
     // No hook fires on approval (the next one is PostToolUse, after the tool
@@ -303,13 +303,13 @@ export async function approveAgent(tmux: Tmux, target: string, scope: "once" | "
 
 export async function denyAgent(tmux: Tmux, target: string): Promise<void> {
   const record = await findRecord(tmux, target);
-  if ((await view(record)).state !== "blocked") throw new AmError("not_blocked", `${record.name} 没有在等待确认`);
+  if ((await view(record)).state !== "blocked") throw new AmError("not_blocked", `${record.name} is not waiting for a decision`);
   await DRIVERS[record.kind].deny(tmux, record);
 }
 
 export async function interruptAgent(tmux: Tmux, target: string): Promise<AgentView> {
   const record = await findRecord(tmux, target);
-  if ((await view(record)).state !== "working") throw new AmError("not_working", `${record.name} 没有在工作`);
+  if ((await view(record)).state !== "working") throw new AmError("not_working", `${record.name} is not working`);
   await DRIVERS[record.kind].interrupt(tmux, record);
   const settled = await poll(async () => {
     const current = await getAgent(tmux, record.paneId);
@@ -318,7 +318,7 @@ export async function interruptAgent(tmux: Tmux, target: string): Promise<AgentV
   if (!settled) {
     throw new AmError(
       "interrupt_unconfirmed",
-      `${record.name} 没有确认中断。若是在模型开始输出前取消的，prompt 会被退回输入框且不留任何记录；用 am open ${record.name} 看一下`,
+      `${record.name} did not confirm the interrupt. If it was cancelled before the model started replying, the prompt went back to the input box without leaving any record; check it with am open ${record.name}`,
     );
   }
   return settled;

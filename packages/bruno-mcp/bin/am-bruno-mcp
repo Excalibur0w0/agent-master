@@ -1,0 +1,4 @@
+#!/bin/sh
+# Resolve symlinks (e.g. a pnpm-linked bin) so the sources are found next to this file.
+self=$(readlink -f "$0")
+exec node --disable-warning=ExperimentalWarning "$(dirname "$self")/../src/server.ts" "$@"

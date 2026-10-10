@@ -1,0 +1,21 @@
+{
+  "name": "@agent-master/bruno-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "MCP server that writes requests into Bruno collections on disk; you send them from the Bruno app.",
+  "bin": {
+    "am-bruno-mcp": "./bin/am-bruno-mcp"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@usebruno/common": "0.25.0",
+    "@usebruno/filestore": "0.12.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  }
+}

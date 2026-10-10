@@ -7,6 +7,7 @@ packages/
   tmux/         @agent-master/tmux       tmux CLI 的类型化封装 + pane 前台进程识别
   agent/        @agent-master/agent      am：在 tmux 里启动、驱动、协同 claude / codex / opencode
   shell-ask/    @agent-master/shell-ask  一句话 → 一行 shell 命令，填入当前 pane（本机或 ssh 远端）
+  bruno-mcp/    @agent-master/bruno-mcp  MCP：把请求写进 Bruno collection，在 Bruno 里点发送
 infra/
   remote-sim/   @agent-master/remote-sim Docker 模拟的远程 Linux 服务器（Ubuntu 24.04 + bash + sshd）
 .claude/commands/am.md、.agents/skills/am/、.opencode/commands/am.md、opencode.json
@@ -113,6 +114,43 @@ echo 'source-file -q ~/.config/agent-master/shell-ask.tmux' >> ~/.tmux.conf
 ```
 
 限制：只识别第一跳 ssh；只生成单行命令；每次调用约 4–6 秒（opencode 冷启动）。
+
+## bruno-mcp
+
+给 agent 用的 MCP server（stdio）：让它在 [Bruno](https://www.usebruno.com/) 的 collection 里新建、修改请求。Bruno 的 collection 就是磁盘上的 `.yml` / `.bru` 文件，Bruno 会监听这些文件，所以写进去的请求立刻出现在 Bruno 侧边栏里，**由你在 Bruno 里发送**。这个 server 本身不发请求。
+
+| 工具 | 作用 |
+| --- | --- |
+| `list_collections` | Bruno 打开的 collection（读 Bruno 的 `preferences.json` 和各 workspace 的 `workspace.yml`） |
+| `get_collection` | 文件夹、请求（路径 / 名字 / method / URL）、collection 环境和 workspace 全局环境的变量（secret 只列名字） |
+| `read_request` | 读一个请求，格式和下面两个工具的参数一致 |
+| `create_request` | 新建 HTTP 请求；文件夹不存在会按 Bruno 的方式建好（带 `folder.yml` / `folder.bru`），seq 排在末尾 |
+| `update_request` | 只改传入的字段，列表字段（headers、assertions…）整体替换；改名不改文件名 |
+
+可写的字段：method、url（query 参数从 URL 解析，和 Bruno 一致）、path 参数、headers、body（none / json / text / xml / sparql / form-urlencoded / multipart）、auth（inherit / none / bearer / basic / apikey）、前后置脚本、vars、assertions、tests、docs、tags。其他 body / auth 类型（graphql、oauth2…）读出来标为 `editable: false`，修改别的字段时原样保留。GraphQL / gRPC / WebSocket 请求只列出来，不能改。
+
+读写都用 `@usebruno/filestore`，也就是 Bruno 自己的序列化库，`.yml` 和 `.bru` 两种 collection 都支持，写出来的文件和在 Bruno 里新建的一样。路径限制在 collection 里面，跳过 Bruno 不加载的部分（`ignore` 配置、`node_modules`、`environments/`、`mocks/`、`.env`）。
+
+接入（路径换成你的仓库位置）：
+
+```sh
+claude mcp add --scope user bruno -- /path/to/agent-master/packages/bruno-mcp/bin/am-bruno-mcp
+```
+
+```toml
+# Codex：~/.codex/config.toml
+[mcp_servers.bruno]
+command = "/path/to/agent-master/packages/bruno-mcp/bin/am-bruno-mcp"
+```
+
+```json
+// opencode：opencode.json
+{ "mcp": { "bruno": { "type": "local", "command": ["/path/to/agent-master/packages/bruno-mcp/bin/am-bruno-mcp"] } } }
+```
+
+Bruno 的数据目录默认是 macOS `~/Library/Application Support/bruno`、Linux `~/.config/bruno`、Windows `%APPDATA%\bruno`，可以用 `AM_BRUNO_DATA_DIR` 覆盖（测试就是这么做的）。不在 Bruno 里打开的 collection 也能用，直接传它的绝对路径。
+
+`@usebruno/filestore@0.12.0` 运行时要用 `nanoid`，但只把它声明成了 devDependency，根 `package.json` 用 `pnpm.packageExtensions` 补上；升级 filestore 时这里的版本号要一起改。
 
 ## 开发
 

@@ -1,13 +1,6 @@
-import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-import type { ShellAskConfig } from "./config.ts";
+import { configPath, type ShellAskConfig } from "./config.ts";
 import { extractCommand } from "./extract.ts";
-
-export const AGENT_NAME = "shell-command";
-const AGENT_ASSET = new URL(`../assets/opencode-agents/${AGENT_NAME}.md`, import.meta.url);
+import { SYSTEM_PROMPT } from "./prompt.ts";
 
 export class GenerateError extends Error {
   readonly detail: string | undefined;
@@ -24,66 +17,21 @@ export interface GenerateResult {
   durationMs: number;
 }
 
-export interface OpencodeEvents {
-  text: string;
-  sessionId: string | undefined;
-  error: string | undefined;
-  eventCount: number;
-}
+export type Completion = { ok: true; text: string } | { ok: false; error: string };
 
-/** Parses the NDJSON stream of `opencode run --format json`. */
-export function parseOpencodeEvents(stdout: string): OpencodeEvents {
-  const result: OpencodeEvents = { text: "", sessionId: undefined, error: undefined, eventCount: 0 };
-  for (const line of stdout.split("\n")) {
-    if (!line.trim()) continue;
-    let event: any;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    result.eventCount++;
-    if (typeof event.sessionID === "string") result.sessionId = event.sessionID;
-    if (event.type === "error" && !result.error) {
-      result.error = event.error?.data?.message ?? event.error?.name ?? "opencode reported an error";
-    }
-    if (event.type === "text" && typeof event.part?.text === "string") result.text += event.part.text;
+/** Reads the body of an OpenAI-compatible `/chat/completions` response. */
+export function parseCompletion(body: string): Completion {
+  let json: any;
+  try {
+    json = JSON.parse(body);
+  } catch {
+    return { ok: false, error: body.trim().slice(0, 300) || "响应为空" };
   }
-  return result;
-}
-
-/**
- * opencode runs in a private directory outside any repo, so project
- * instructions (AGENTS.md etc.) never leak into the prompt. The agent
- * definition is copied there and refreshed when it changes.
- */
-async function prepareWorkdir(): Promise<string> {
-  const workdir = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "agent-master", "shell-ask");
-  const agentDir = join(workdir, ".opencode", "agents");
-  const agentFile = join(agentDir, `${AGENT_NAME}.md`);
-  const wanted = await readFile(AGENT_ASSET, "utf8");
-  const current = await readFile(agentFile, "utf8").catch(() => "");
-  if (current !== wanted) {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(agentFile, wanted);
-  }
-  return workdir;
-}
-
-/** opencode locates the project from $PWD rather than the real cwd, so both must point at the workdir. */
-function opencodeEnv(workdir: string): NodeJS.ProcessEnv {
-  return { ...process.env, PWD: workdir };
-}
-
-function deleteSessionInBackground(config: ShellAskConfig, workdir: string, sessionId: string): void {
-  const child = spawn(config.opencodeBin, ["session", "delete", sessionId], {
-    cwd: workdir,
-    env: opencodeEnv(workdir),
-    detached: true,
-    stdio: "ignore",
-  });
-  child.on("error", () => {});
-  child.unref();
+  // OpenRouter can report upstream failures in the body of a 200 response.
+  const error = json?.error ?? json?.choices?.[0]?.error;
+  if (error) return { ok: false, error: String(error.message ?? JSON.stringify(error)) };
+  const content = json?.choices?.[0]?.message?.content;
+  return { ok: true, text: typeof content === "string" ? content : "" };
 }
 
 export async function generateCommand(options: {
@@ -92,47 +40,43 @@ export async function generateCommand(options: {
   signal?: AbortSignal;
 }): Promise<GenerateResult> {
   const { prompt, config, signal } = options;
-  const workdir = await prepareWorkdir();
-  const args = ["run", "--pure", "--format", "json", "--model", config.model, "--agent", AGENT_NAME, "--title", "shell-ask", prompt];
+  if (!config.apiKey) throw new GenerateError(`缺少 apiKey：写进 ${configPath()}，或设置环境变量 AM_SHELL_ASK_API_KEY`);
+
+  const timeout = AbortSignal.timeout(config.timeoutMs);
   const started = Date.now();
-
-  const { code, stdout, stderr } = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(config.opencodeBin, args, { cwd: workdir, env: opencodeEnv(workdir), stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new GenerateError(`opencode 超过 ${Math.round(config.timeoutMs / 1000)}s 没有返回`));
-    }, config.timeoutMs);
-    const onAbort = () => {
-      child.kill();
-      reject(new GenerateError("已取消"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(new GenerateError(`无法启动 opencode (${config.opencodeBin})`, error.message));
+  let status: number;
+  let body: string;
+  try {
+    const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0.1,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
+      }),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      resolve({ code, stdout, stderr });
-    });
-  });
-
-  const events = parseOpencodeEvents(stdout);
-  if (events.sessionId) deleteSessionInBackground(config, workdir, events.sessionId);
-
-  if (code !== 0 || events.error) {
-    const detail = events.error ?? stderr.trim().split("\n").pop();
-    throw new GenerateError(`opencode 失败${code ? ` (exit ${code})` : ""}`, detail);
+    status = response.status;
+    body = await response.text();
+  } catch (error) {
+    if (signal?.aborted) throw new GenerateError("已取消");
+    if (timeout.aborted) throw new GenerateError(`模型超过 ${Math.round(config.timeoutMs / 1000)}s 没有返回`);
+    // fetch() reports every network failure as "fetch failed"; the reason is in `cause`.
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+    throw new GenerateError(`请求 ${config.baseUrl} 失败`, cause instanceof Error ? cause.message : String(cause));
   }
 
-  const extracted = extractCommand(events.text);
+  const completion = parseCompletion(body);
+  if (status < 200 || status >= 300) {
+    throw new GenerateError(`模型请求失败 (HTTP ${status})`, completion.ok ? body.trim().slice(0, 300) : completion.error);
+  }
+  if (!completion.ok) throw new GenerateError("模型返回了错误", completion.error);
+
+  const extracted = extractCommand(completion.text);
   if (!extracted.ok) {
     const message = extracted.reason === "empty" ? "模型没有返回内容" : "模型返回了多行内容，未插入（避免换行被当成回车执行）";
     throw new GenerateError(message, extracted.text);

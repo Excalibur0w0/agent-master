@@ -104,17 +104,21 @@ packages/shell-ask/bin/am-ask tmux-install
 echo 'source-file -q ~/.config/agent-master/shell-ask.tmux' >> ~/.tmux.conf
 ```
 
-配置 `~/.config/agent-master/shell-ask.json`（全部可选）：
+配置 `~/.config/agent-master/shell-ask.json`（除 `apiKey` 外都可选；`baseUrl` 可以换成任何 OpenAI 兼容接口）：
 
 ```json
 {
-  "model": "openrouter/deepseek/deepseek-v4.1-flash",
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "apiKey": "sk-or-v1-...",
+  "model": "deepseek/deepseek-v4.1-flash",
   "hosts": { "remote-sim": { "os": "Ubuntu 24.04 (GNU coreutils)", "shell": "bash" } },
   "defaultRemote": { "os": "Linux (assume GNU coreutils; distribution unknown)", "shell": "bash" }
 }
 ```
 
-限制：只识别第一跳 ssh；只生成单行命令；每次调用约 4–6 秒（opencode 冷启动）。
+环境变量 `AM_SHELL_ASK_API_KEY`、`AM_SHELL_ASK_MODEL` 优先于配置文件。
+
+限制：只识别第一跳 ssh；只生成单行命令。
 
 ## 开发
 

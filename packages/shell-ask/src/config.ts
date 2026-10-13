@@ -11,9 +11,11 @@ export interface HostProfile {
 }
 
 export interface ShellAskConfig {
-  /** opencode model, `provider/model`. */
+  /** Any OpenAI-compatible API; `/chat/completions` is appended. */
+  baseUrl: string;
+  apiKey?: string;
+  /** Model id as that API names it, e.g. `deepseek/deepseek-v4.1-flash` on OpenRouter. */
   model: string;
-  opencodeBin: string;
   timeoutMs: number;
   /** Keys are ssh destinations as typed (alias or hostname); `*` matches any run of characters. */
   hosts: Record<string, HostProfile>;
@@ -22,9 +24,9 @@ export interface ShellAskConfig {
 }
 
 export const DEFAULT_CONFIG: ShellAskConfig = {
+  baseUrl: "https://openrouter.ai/api/v1",
   // Pinned version: `~...-latest` aliases can silently switch models and pricing.
-  model: "openrouter/deepseek/deepseek-v4.1-flash",
-  opencodeBin: "opencode",
+  model: "deepseek/deepseek-v4.1-flash",
   timeoutMs: 60_000,
   hosts: {},
   defaultRemote: { os: "Linux (assume GNU coreutils; distribution unknown)", shell: "bash" },
@@ -53,6 +55,6 @@ export async function loadConfig(): Promise<ShellAskConfig> {
     defaultRemote: { ...DEFAULT_CONFIG.defaultRemote, ...file.defaultRemote },
   };
   if (process.env.AM_SHELL_ASK_MODEL) config.model = process.env.AM_SHELL_ASK_MODEL;
-  if (process.env.AM_OPENCODE_BIN) config.opencodeBin = process.env.AM_OPENCODE_BIN;
+  if (process.env.AM_SHELL_ASK_API_KEY) config.apiKey = process.env.AM_SHELL_ASK_API_KEY;
   return config;
 }

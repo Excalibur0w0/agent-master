@@ -13,7 +13,7 @@ after(() => tmux.killServer());
 
 test("the generated binding keeps paths literal when tmux loads it", async () => {
   const odd = `/opt/it's "odd"/$HOME;dir`;
-  const config = renderTmuxConfig({ key: "M-a", node: `${odd}/node`, cli: `${odd}/cli.ts`, opencode: `${odd}/opencode` });
+  const config = renderTmuxConfig({ key: "M-a", node: `${odd}/node`, cli: `${odd}/cli.ts` });
   const file = join(await mkdtemp(join(tmpdir(), "am-ask-")), "shell-ask.tmux");
   await writeFile(file, config);
 
@@ -25,7 +25,7 @@ test("the generated binding keeps paths literal when tmux loads it", async () =>
 });
 
 test("key names are validated so they cannot inject tmux commands", () => {
-  const options = { node: "/n", cli: "/c", opencode: "/o" };
+  const options = { node: "/n", cli: "/c" };
   assert.doesNotThrow(() => renderTmuxConfig({ ...options, key: "a" }));
   assert.doesNotThrow(() => renderTmuxConfig({ ...options, key: "C-x" }));
   assert.throws(() => renderTmuxConfig({ ...options, key: "a ; kill-server" }));

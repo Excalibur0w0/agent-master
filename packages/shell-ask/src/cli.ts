@@ -37,7 +37,6 @@ async function tmuxInstall(key: string, source: boolean): Promise<void> {
     key,
     node: which("node") ?? process.execPath,
     cli: fileURLToPath(import.meta.url),
-    opencode: which("opencode") ?? "opencode",
   });
   const file = join(configDir(), "shell-ask.tmux");
   await mkdir(configDir(), { recursive: true });

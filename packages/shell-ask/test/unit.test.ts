@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { matchHostProfile, parseSshArgs, type TargetContext } from "../src/context.ts";
 import { extractCommand } from "../src/extract.ts";
-import { parseOpencodeEvents } from "../src/generate.ts";
+import { parseCompletion } from "../src/generate.ts";
 import { buildPrompt } from "../src/prompt.ts";
 
 test("parseSshArgs handles the common ways people type ssh", () => {
@@ -33,21 +33,12 @@ test("extractCommand keeps one clean line", () => {
   assert.deepEqual(extractCommand("  \n\n"), { ok: false, reason: "empty", text: "  \n\n" });
 });
 
-test("parseOpencodeEvents joins text parts and surfaces errors", () => {
-  const ok = parseOpencodeEvents(
-    [
-      '{"type":"step_start","sessionID":"ses_1"}',
-      '{"type":"text","sessionID":"ses_1","part":{"text":"ls "}}',
-      "not json",
-      '{"type":"text","sessionID":"ses_1","part":{"text":"-la"}}',
-    ].join("\n"),
-  );
-  assert.equal(ok.text, "ls -la");
-  assert.equal(ok.sessionId, "ses_1");
-  assert.equal(ok.eventCount, 3);
-
-  const failed = parseOpencodeEvents('{"type":"error","error":{"name":"APIError","data":{"message":"invalid key"}}}');
-  assert.equal(failed.error, "invalid key");
+test("parseCompletion reads the content and surfaces errors", () => {
+  assert.deepEqual(parseCompletion('{"choices":[{"message":{"role":"assistant","content":"ls -la"}}]}'), { ok: true, text: "ls -la" });
+  assert.deepEqual(parseCompletion('{"choices":[{"message":{"content":null}}]}'), { ok: true, text: "" });
+  assert.deepEqual(parseCompletion('{"error":{"message":"invalid key","code":401}}'), { ok: false, error: "invalid key" });
+  assert.deepEqual(parseCompletion('{"choices":[{"error":{"message":"upstream overloaded"}}]}'), { ok: false, error: "upstream overloaded" });
+  assert.deepEqual(parseCompletion("<html>502 Bad Gateway</html>\n"), { ok: false, error: "<html>502 Bad Gateway</html>" });
 });
 
 test("buildPrompt describes the remote target", () => {

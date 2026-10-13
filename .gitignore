@@ -2,3 +2,4 @@ node_modules/
 .state/
 *.log
 .DS_Store
+.cache/

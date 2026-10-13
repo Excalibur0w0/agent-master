@@ -1,9 +1,9 @@
-// End-to-end: a real tmux pane ssh'd into the Docker remote-sim, a real opencode
-// call, and verification through side effects inside the container — never by
-// reading the screen. Needs Docker and a working opencode model.
+// End-to-end: a real tmux pane ssh'd into the Docker remote-sim, a real model
+// call over HTTP, and verification through side effects inside the container —
+// never by reading the screen. Needs Docker and a shell-ask config with apiKey.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, test } from "node:test";
@@ -11,6 +11,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import { Tmux, foregroundProcess } from "@agent-master/tmux";
+
+import { loadConfig } from "../../src/config.ts";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(import.meta.dirname, "../../../..");
@@ -57,12 +59,17 @@ async function sshPane(session: string): Promise<string> {
 }
 
 before(async () => {
+  // The user's own config supplies the endpoint, model and key; only the hosts are the test's.
+  const { baseUrl, model, apiKey } = await loadConfig();
+  if (!apiKey) throw new Error("no apiKey: set it in the shell-ask config or AM_SHELL_ASK_API_KEY");
+
   execFileSync("sh", [join(simDir, "scripts/up.sh")], { stdio: "inherit" });
   execFileSync("docker", ["exec", container, "sh", "-c", "pkill -u dev -x bash || true"]);
 
   workDir = await mkdtemp(join(tmpdir(), "am-ask-e2e-"));
   const configFile = join(workDir, "shell-ask.json");
-  await writeFile(configFile, JSON.stringify({ hosts: { "remote-sim": { os: "Ubuntu 24.04 (GNU coreutils)", shell: "bash" } } }));
+  const hosts = { "remote-sim": { os: "Ubuntu 24.04 (GNU coreutils)", shell: "bash" } };
+  await writeFile(configFile, JSON.stringify({ baseUrl, model, apiKey, hosts }));
 
   await tmux.newSession("bootstrap", { command: "sh" });
   env = { ...process.env, AM_SHELL_ASK_CONFIG: configFile, TMUX: `${await tmux.socketPath()},0,0` };
@@ -71,6 +78,7 @@ before(async () => {
 after(async () => {
   await tmux.killServer();
   execFileSync("docker", ["exec", container, "sh", "-c", `rm -f /tmp/shell-ask-e2e-${runId}-*`]);
+  if (workDir) await rm(workDir, { recursive: true, force: true });
 });
 
 test("run --insert types a remote-ready command but does not execute it", { timeout: 120_000 }, async () => {

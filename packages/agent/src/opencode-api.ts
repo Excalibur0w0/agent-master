@@ -23,10 +23,14 @@ export interface OpencodeMessage {
 export class OpencodeApi {
   readonly url: string;
   readonly password: string;
+  readonly session: string;
+  readonly v2: boolean;
 
-  constructor(url: string, password: string) {
+  constructor(url: string, password: string, session = "") {
     this.url = url.replace(/\/$/, "");
     this.password = password;
+    this.session = session;
+    this.v2 = this.url.endsWith("/api");
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -42,12 +46,13 @@ export class OpencodeApi {
     });
     if (!response.ok) throw new Error(`opencode ${method} ${path}: HTTP ${response.status}`);
     const text = await response.text();
-    return (text ? JSON.parse(text) : undefined) as T;
+    const result = text ? JSON.parse(text) : undefined;
+    return (this.v2 && result ? result.data : result) as T;
   }
 
   async ready(): Promise<boolean> {
     try {
-      await this.request("GET", "/session/status");
+      await this.status();
       return true;
     } catch {
       return false;
@@ -55,31 +60,58 @@ export class OpencodeApi {
   }
 
   /** Sessions that are not idle, keyed by id (`busy`, `retry`, ...). */
-  status(): Promise<Record<string, { type: string }>> {
-    return this.request("GET", "/session/status");
+  async status(): Promise<Record<string, { type: string }>> {
+    const states = await this.request<Record<string, { type: string }>>("GET", this.v2 ? "/session/active" : "/session/status");
+    if (this.v2 && this.session) return states[this.session] ? { [this.session]: states[this.session] } : {};
+    return states;
   }
 
-  permissions(): Promise<OpencodePermission[]> {
+  async permissions(): Promise<OpencodePermission[]> {
+    if (this.v2) {
+      const entries = await this.request<Array<{ id: string; sessionID: string; action: string; resources: string[] }>>("GET", `/session/${this.session}/permission`);
+      return entries.map((p) => ({ id: p.id, sessionID: p.sessionID, permission: p.action, patterns: p.resources }));
+    }
     return this.request("GET", "/permission");
   }
 
   questions(): Promise<Array<{ id: string; sessionID: string }>> {
-    return this.request("GET", "/question");
+    return this.request("GET", this.v2 ? `/session/${this.session}/form` : "/question");
   }
 
   sessions(): Promise<OpencodeSession[]> {
     return this.request("GET", "/session");
   }
 
-  messages(sessionID: string): Promise<OpencodeMessage[]> {
+  async messages(sessionID: string): Promise<OpencodeMessage[]> {
+    if (this.v2) {
+      const entries = await this.request<Array<{ id: string; type: string; content: OpencodeMessage["parts"] }>>("GET", `/session/${sessionID}/message?order=desc&limit=1&type=assistant`);
+      return entries.map((m) => ({ info: { id: m.id, role: m.type }, parts: m.content }));
+    }
     return this.request("GET", `/session/${sessionID}/message`);
   }
 
+  async promptID(): Promise<string> {
+    const entries = await this.request<Array<{ id: string }>>("GET", `/session/${this.session}/message?order=desc&limit=1&type=user`);
+    return entries[0]?.id ?? "";
+  }
+
+  createSession(cwd: string, model?: string): Promise<OpencodeSession> {
+    const slash = model?.indexOf("/") ?? -1;
+    if (model && slash < 1) throw new Error("opencode model must use provider/model format");
+    const [id, variant] = (model?.slice(slash + 1) ?? "").split("#");
+    return this.request("POST", "/session", {
+      location: { directory: cwd },
+      ...(model ? { model: { providerID: model.slice(0, slash), id, ...(variant ? { variant } : {}) } } : {}),
+    });
+  }
+
   replyPermission(id: string, reply: "once" | "always" | "reject"): Promise<unknown> {
-    return this.request("POST", `/permission/${id}/reply`, { reply });
+    return this.v2
+      ? this.request("POST", `/session/${this.session}/permission/${id}/reply`, { decision: reply })
+      : this.request("POST", `/permission/${id}/reply`, { reply });
   }
 
   abort(sessionID: string): Promise<unknown> {
-    return this.request("POST", `/session/${sessionID}/abort`);
+    return this.request("POST", `/session/${sessionID}/${this.v2 ? "interrupt" : "abort"}`);
   }
 }

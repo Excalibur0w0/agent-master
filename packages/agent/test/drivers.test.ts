@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,8 +92,29 @@ test("codex hook trust is verified with Codex's own hash, per section", async ()
 test("agents start without update dialogs that would take am's keystrokes", async () => {
   const c = await codex.launch({ cwd: "/tmp", args: [] });
   assert.ok(c.command.join(" ").includes("-c check_for_update_on_startup=false"));
-  const o = await opencode.launch({ cwd: "/tmp", args: [] });
-  assert.equal(o.env?.OPENCODE_DISABLE_AUTOUPDATE, "1");
+  const dir = await mkdtemp(join(tmpdir(), "am-opencode-version-"));
+  const originalPath = process.env.PATH;
+  try {
+    process.env.PATH = `${dir}:${originalPath}`;
+    for (const version of ["1.2.27", "opencode v2.0.29"]) {
+      await writeFile(join(dir, "opencode"), `#!/bin/sh\necho '${version}'\n`);
+      await chmod(join(dir, "opencode"), 0o755);
+      const o = await opencode.launch({ cwd: "/tmp", model: "opencode/deepseek-v4.1-flash-free", args: [] });
+      assert.equal(o.env?.OPENCODE_DISABLE_AUTOUPDATE, "1");
+      if (version.startsWith("1")) {
+        assert.deepEqual(o.command.slice(0, 2), ["opencode", "--port"]);
+        assert.ok(o.command.includes("-m"));
+      } else {
+        assert.equal(o.command[0], process.execPath);
+        assert.ok(o.command[1].endsWith("opencode-v2-runner.ts"));
+        assert.equal(o.command[3], "opencode/deepseek-v4.1-flash-free");
+        assert.ok(o.fields?.url?.endsWith("/api"));
+      }
+    }
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("hook commands are shell-quoted only when the path needs it", () => {

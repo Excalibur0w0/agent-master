@@ -59,6 +59,8 @@ am stop reviewer
 
 所有命令支持 `--json`。每个 agent 一个后台会话，`am list` 的 SESSION 列就是会话名；在会话里可以直接接管（输入、Esc、批准），`am stop` 会连同会话一起关掉。
 
+OpenCode 1.x / 2.x 会按 `opencode --version` 自动适配。2.x 使用独立的本机 `serve` 服务和绑定会话的 TUI，模型在创建会话时设置；`am stop` 或关闭 TUI 会一并退出该服务。2.x 的状态、权限、表单和回复通过 `/api` 读取，发送确认使用持久化的用户消息 ID，因此快速完成的回复也不会漏掉确认。
+
 ### 状态从哪来
 
 | | Claude Code | Codex | opencode |

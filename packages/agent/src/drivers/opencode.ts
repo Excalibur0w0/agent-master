@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
 
 import { OpencodeApi } from "../opencode-api.ts";
 import { writeRecord, type AgentRecord } from "../registry.ts";
-import { AmError, poll, sleep, type Driver } from "./types.ts";
+import { AmError, poll, sleep, type Driver, type LaunchPlan } from "./types.ts";
 
 // The API answers before the TUI has subscribed to input; keystrokes sent in
 // that gap are dropped (and am never resends), so leave the TUI time to subscribe.
@@ -23,7 +25,7 @@ function freePort(): Promise<number> {
 
 function api(record: AgentRecord): OpencodeApi {
   if (!record.url) throw new AmError("no_api", `${record.name} has no recorded opencode server address`);
-  return new OpencodeApi(record.url, record.auth);
+  return new OpencodeApi(record.url, record.auth, record.session);
 }
 
 /**
@@ -46,9 +48,18 @@ export const opencode: Driver = {
     return [];
   },
 
-  async launch({ model, args }) {
+  async launch({ model, args }): Promise<LaunchPlan> {
     const port = await freePort();
     const password = randomBytes(18).toString("base64url");
+    const version = execFileSync("opencode", ["--version"], { encoding: "utf8", timeout: 10_000 });
+    if (Number(version.match(/(?:^|\s)v?(\d+)\./)?.[1]) >= 2) {
+      const url = `http://127.0.0.1:${port}/api`;
+      return {
+        command: [process.execPath, fileURLToPath(new URL("../opencode-v2-runner.ts", import.meta.url)), url, model ?? "", ...args],
+        env: { OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_SERVER_PASSWORD: password, PATH: process.env.PATH ?? "" },
+        fields: { url, auth: password },
+      };
+    }
     return {
       command: ["opencode", "--port", String(port), ...(model ? ["-m", model] : []), ...args],
       // The "Update Available" dialog pops up at a random moment after start and
@@ -62,6 +73,7 @@ export const opencode: Driver = {
     const ready = await poll(async () => {
       const record = await reload();
       if (record.paneDead) throw new AmError("exited", "opencode exited right after starting");
+      if (record.url.endsWith("/api") && !record.session) return undefined;
       return (await api(record).ready()) ? true : undefined;
     }, deadline);
     if (!ready) throw new AmError("start_timeout", "opencode's server did not become ready in time");
@@ -94,12 +106,16 @@ export const opencode: Driver = {
     // per opencode process) and the session this pane is bound to. Other
     // instances in the same project share the session list, so "latest" is no evidence.
     const client = api(record);
+    // v2 stores accepted user messages durably, including very fast replies
+    // whose running state can finish between am's polls.
+    if (client.v2) return `v2:${await client.promptID()}`;
     const status = Object.keys(await client.status()).sort().join(",");
     const bound = record.session ? (await client.sessions()).find((s) => s.id === record.session)?.time.updated ?? 0 : 0;
     return `${status}|${bound}`;
   },
 
   async afterAccepted(tmux, record, marker) {
+    if (marker.startsWith("v2:")) return; // Bound before the v2 TUI starts.
     // The busy session seen while confirming the prompt is this server's own; bind to it.
     // Without that evidence keep the previous binding rather than guess.
     const busy = marker.split("|")[0].split(",").filter(Boolean)[0];

@@ -62,7 +62,35 @@ am stop reviewer
 
 OpenCode 1.x / 2.x 会按 `opencode --version` 自动适配。2.x 使用独立的本机 `serve` 服务和绑定会话的 TUI，模型在创建会话时设置；`am stop` 或关闭 TUI 会一并退出该服务。2.x 的状态、权限、表单和回复通过 `/api` 读取，发送确认使用持久化的用户消息 ID，因此快速完成的回复也不会漏掉确认。
 
-dsh 指 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的终端界面，由 [deepseek-harness-tui](https://github.com/Excalibur0w0/deepseek-harness-tui) 的 `dshcli` 启动，需要先按它的说明装好、`dshcli` 在 PATH 上，并配好 `tui` profile 的模型。`--model` 写成 `<provider>/<model>`；不写就用 profile 里的默认模型。
+### dsh（dshcli）
+
+`--kind dsh` 启动的是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的终端界面，由 [deepseek-harness-tui](https://github.com/Excalibur0w0/deepseek-harness-tui) 提供的 `dshcli` 命令启动。dsh 官方没有交互式终端界面（自带的是网页版、一次性的 headless 运行器、SDK 和 ACP 服务），所以要先装好 deepseek-harness-tui：
+
+1. 按 [它的安装说明](https://github.com/Excalibur0w0/deepseek-harness-tui#安装) 走一遍：准备带 `node:ffi` 的官方 Node 26、构建 dsh、把 deepseek-harness-tui 装进 dsh 的 `tui` profile、配好 API key。
+2. 把 `dshcli` 链接进 PATH 上的目录，例如 `ln -s ~/dsh/deepseek-harness-tui/bin/dshcli ~/.local/bin/dshcli`。
+3. 先在终端里直接运行一次 `dshcli`，能看到输入框、问一句能回答，再交给 am。
+
+```sh
+am start helper --kind dsh                                 # 用 tui profile 里的默认模型
+am start helper --kind dsh --model deepseek-official/deepseek-flash   # 换模型：<provider>/<model>
+am start helper --kind dsh --env DSH_PERMISSION_MODE=read-only   # 沙箱改成只读，写文件都要批准
+am start helper --kind dsh -- --patch ./my-overlay.yml     # -- 之后原样交给 dshcli，比如再叠一层自己的 patch
+```
+
+am 启动时只在命令行上加 `--patch` 叠加层，不改 `~/.dsh` 里的 profile：
+
+- 上报插件 `packages/agent/dsh/reporter.js`：把状态写到 agent 所在的 tmux 窗格，每轮结束时把最终回复写到 `~/.cache/agent-master/dsh-replies/<会话 id>.txt`（`am read` 读的就是它）。
+- 用了 `--model` 时再叠一层，替换 profile 里 `agent-default-model` 那一行的 config；`<provider>` 要是 profile 里配过的服务（`/connect` 连过的，或 `cordis.patch.yml` 里写的）。
+
+叠加层文件按内容命名，放在 `~/.cache/agent-master/dsh-*.yml`。
+
+在 dsh 里用 `/am` 派活：先运行 `am install`（写入 `~/.dsh/skills/am`），再确认 deepseek-harness-tui 是较新的版本（见上面入口表下的说明）。
+
+启动出问题时：
+
+- `dshcli` 不在 PATH 上，`am start` 会提前提示。
+- 报 `dsh exited right after starting`：`dshcli` 自己启动失败了（比如找不到带 FFI 的 Node、dsh 仓库不在同级目录）。在终端里直接运行 `dshcli` 能看到具体原因，对照 deepseek-harness-tui README 的「遇到问题」处理。
+- 报 `start_timeout`：界面没在时限内打开，用 `am open <name>` 看一下它停在哪里。
 
 ### 状态从哪来
 

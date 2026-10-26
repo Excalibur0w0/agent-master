@@ -1,5 +1,6 @@
 // End-to-end: real agents in an isolated tmux server, driven only through the
-// `am` CLI. Costs a little model usage. AM_E2E_KINDS picks agents (default all).
+// `am` CLI. Costs a little model usage. AM_E2E_KINDS picks agents (default
+// claude, codex and opencode; add dsh when deepseek-harness-tui's dshcli is set up).
 // AM_E2E_TRUST_CODEX_HOOKS=1 answers Codex's one-time hook trust prompt.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -68,6 +69,12 @@ const SETUPS: Record<string, { args: string[]; env?: string[]; cwd?: string; per
   claude: {
     args: ["--model", "haiku", "--", "--permission-mode", "default"],
     permission: (file) => `用 Bash 工具执行 touch ${file}，然后只回复 done`,
+  },
+  dsh: {
+    // Uses the tui profile's model. Read-only, so a write in the workspace asks first.
+    args: [],
+    env: ["DSH_PERMISSION_MODE=read-only"],
+    permission: (file) => `用 shell 工具执行 touch ${file}，被沙箱拦下就申请提权，然后只回复 done`,
   },
   codex: {
     cwd: codexDir,

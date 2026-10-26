@@ -37,7 +37,7 @@ packages/agent/bin/am install   # ~/.local/bin/am + 三个 agent 的全局 /am�
 | Codex | `$am <要委派的事>` | `agents/openai.yaml` 里 `allow_implicit_invocation: false` | `~/.codex/skills/am/` / `.agents/skills/am/` |
 | opencode | `/am <要委派的事>` | 自定义命令；项目里的 `.agents/skills/am` 用 `opencode.json` 的 `permission.skill.am: deny` 对模型隐藏 | `~/.config/opencode/commands/am.md` / `.opencode/commands/am.md` |
 
-不用 `.claude/skills/am` 是因为 opencode 也会读它，而且不认 `disable-model-invocation`。`am prompt` 遇到以 `/` 开头的内容会逐字输入第一行，因为粘贴进去的 `/xxx` 不会被当成斜杠命令。
+dsh 目前只能被调度，它的界面里还没有 `/am` 入口。不用 `.claude/skills/am` 是因为 opencode 也会读它，而且不认 `disable-model-invocation`。`am prompt` 遇到以 `/` 开头的内容会逐字输入第一行，因为粘贴进去的 `/xxx` 不会被当成斜杠命令。
 
 ```sh
 am start reviewer --kind codex            # 开在独立的 tmux 会话 am-reviewer；就绪后返回
@@ -48,7 +48,7 @@ am stop reviewer
 
 | 命令 | 作用 |
 | --- | --- |
-| `am start <name> --kind claude\|codex\|opencode [--cwd] [--model] [--env K=V] [--window] [-- 原生参数]` | 在独立会话 `am-<name>` 里启动（`--window` 改为当前会话的新窗口）、注入状态上报、等就绪 |
+| `am start <name> --kind claude\|codex\|opencode\|dsh [--cwd] [--model] [--env K=V] [--window] [-- 原生参数]` | 在独立会话 `am-<name>` 里启动（`--window` 改为当前会话的新窗口）、注入状态上报、等就绪 |
 | `am open <name>` | 切到它的会话（tmux 外打印 `tmux attach` 命令）；也可以 `prefix + s` 选 |
 | `am list` / `am status <name>` | 状态：`starting` `idle` `working` `blocked` `exited` `unknown`；`detail` 说明在等什么 |
 | `am prompt <name> <text\|-> [--wait] [--timeout]` | 粘贴 + 回车，并确认对方收到；blocked / working 时拒绝 |
@@ -61,29 +61,32 @@ am stop reviewer
 
 OpenCode 1.x / 2.x 会按 `opencode --version` 自动适配。2.x 使用独立的本机 `serve` 服务和绑定会话的 TUI，模型在创建会话时设置；`am stop` 或关闭 TUI 会一并退出该服务。2.x 的状态、权限、表单和回复通过 `/api` 读取，发送确认使用持久化的用户消息 ID，因此快速完成的回复也不会漏掉确认。
 
+dsh 指 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的终端界面，由 [deepseek-harness-tui](https://github.com/Excalibur0w0/deepseek-harness-tui) 的 `dshcli` 启动，需要先按它的说明装好、`dshcli` 在 PATH 上，并配好 `tui` profile 的模型。`--model` 写成 `<provider>/<model>`；不写就用 profile 里的默认模型。
+
 ### 状态从哪来
 
-| | Claude Code | Codex | opencode |
-| --- | --- | --- | --- |
-| 注入方式 | `--settings`（不改你的配置） | `-c hooks.*`（不改配置文件；首次要信任一次） | `--port` + `OPENCODE_SERVER_PASSWORD` |
-| working / blocked / idle | hook：UserPromptSubmit / PermissionRequest、AskUserQuestion / Stop | hook：UserPromptSubmit / PermissionRequest / Stop | 内置服务 API：`/session/status`、`/permission`、`/question` |
-| Esc 中断 | 无 hook：读对话记录里的 `[Request interrupted by user…]` | `Interrupt` hook | API |
-| 回复 | 对话记录 JSONL | 对话记录里的 `task_complete` | `GET /session/{id}/message` |
-| 批准 / 中断 | 按键 Enter / Esc | 按键 Enter / Esc | API |
+| | Claude Code | Codex | opencode | dsh |
+| --- | --- | --- | --- | --- |
+| 注入方式 | `--settings`（不改你的配置） | `-c hooks.*`（不改配置文件；首次要信任一次） | `--port` + `OPENCODE_SERVER_PASSWORD` | `--patch` 叠加 am 的上报插件 `packages/agent/dsh/reporter.js`（不改 profile） |
+| working / blocked / idle | hook：UserPromptSubmit / PermissionRequest、AskUserQuestion / Stop | hook：UserPromptSubmit / PermissionRequest / Stop | 内置服务 API：`/session/status`、`/permission`、`/question` | 插件监听进程内事件：`tui/submit` / `approval/asked`、提问面板 / `agent/status`、`turn/end` |
+| Esc 中断 | 无 hook：读对话记录里的 `[Request interrupted by user…]` | `Interrupt` hook | API | `turn/end` 的 `aborted` |
+| 回复 | 对话记录 JSONL | 对话记录里的 `task_complete` | `GET /session/{id}/message` | 插件在每轮结束时写出的最终回复（dsh 的会话日志是 zstd 压缩的） |
+| 批准 / 中断 | 按键 Enter / Esc | 按键 Enter / Esc | API | 按键 y / n / Esc |
 
-hook 把状态写在 agent 所在 pane 的 `@am_*` 选项上（`tmux show-options -p`），所以没有常驻进程；对话记录只从本轮开始的偏移量往后读。
+hook（dsh 是插件）把状态写在 agent 所在 pane 的 `@am_*` 选项上（`tmux show-options -p`），所以没有常驻进程；对话记录只从本轮开始的偏移量往后读。
 
 几个保证不误操作的细节：
 - **启动**：agent 进程先停在 `tmux wait-for <通道>` 上，`am` 按 pane id 写好记录后发信号放行（信号先到也不会丢），hook 不可能先于记录运行；`am` 中途退出时，pane 60 秒后自行退出，不会启动一个没有记录的 agent。同名检查和建 pane 在一把全局启动锁里完成。
 - **发送**：每个 agent 一把发送锁（tmux 内原子加锁，120 秒过期）；每次按键都是一条 tmux 内的 `if-shell`，锁不在自己手里就不发。「已收到」只看 `UserPromptSubmit` 原子自增的 `@am_seq`（opencode 看服务端的 busy 会话）；没确认就报 `prompt_stalled`，**从不重发**，避免同一个任务被执行两次。
 - **不让弹窗吃掉按键**：am 启动的 Codex 关掉启动时的更新检查（`check_for_update_on_startup=false`），opencode 关掉自动更新（`OPENCODE_DISABLE_AUTOUPDATE=1`）。否则更新对话框会在任意时刻弹出，`am prompt` 的 Enter 会替你确认升级。
-- **权限**：`PermissionRequest` 不带 `tool_use_id`，用「工具名 + 输入」的校验和与 `PostToolUse` 配对（Codex 给 Bash 输入额外加的 `description` 会先去掉），并行工具完成不会误清 blocked；`am approve` 只在仍是同一个请求时把状态改成 working。
+- **权限**：`PermissionRequest` 不带 `tool_use_id`，用「工具名 + 输入」的校验和与 `PostToolUse` 配对（Codex 给 Bash 输入额外加的 `description` 会先去掉），并行工具完成不会误清 blocked；`am approve` 只在仍是同一个请求时把状态改成 working。dsh 的审批自带 id，按 TUI 弹出的顺序逐个记录。
 - **调试**：`am start ... --env AM_HOOK_LOG=/tmp/hooks.ndjson` 会把 hook 收到的原始输入逐条记下来。
 
 ### 首次使用会遇到的确认（hook 看不到，需要人到它的会话里点一次）
 
 - Claude：目录信任（父目录信任过就不会问）
 - Codex：目录信任（按 git 根目录记录），以及 am 的 hooks 信任（`Trust all and continue`，记录在 `~/.codex/config.toml` 的 `[hooks.state]`）
+- dsh：没有确认框；`dshcli` 不在 PATH 上时 `am start` 会提前提示
 
 `am start` 会提前提示；没确认时会超时报错。
 
@@ -91,11 +94,12 @@ hook 把状态写在 agent 所在 pane 的 `@am_*` 选项上（`tmux show-option
 
 - **Claude 在模型开始输出前被 Esc**：它把 prompt 退回输入框，不写对话记录、不触发 hook，状态会停在 `working` 直到人再次提交。`am interrupt` 会等这一轮至少 3 秒再按 Esc，并在没确认时报 `interrupt_unconfirmed`；这种状态下 `am prompt` 会拒绝发送，不会把新内容拼进残留的输入。
 - Codex 第一次提交前没有任何事件，`am start` 用固定 3 秒作为就绪判断；在此之前会先等两个信任确认都写进 `config.toml`，否则 prompt 的 Enter 会替你答掉确认框。opencode 的界面比 API 晚就绪，`am start` 在 API 就绪后再等 3 秒。
-- 两个**完全相同**的工具调用（同名同输入）并行等待批准时，先完成的那个会把 blocked 清掉；hook 里没有能区分它们的字段。
+- Claude / Codex：两个**完全相同**的工具调用（同名同输入）并行等待批准时，先完成的那个会把 blocked 清掉；hook 里没有能区分它们的字段。
 - opencode 的会话按「`am prompt` 确认收到时服务端正在跑的会话」绑定。人在它的界面里切换或新建会话后，`am read` 仍读绑定的那个，直到下一次 `am prompt`；还没收到过 `am prompt` 且空闲时报 `no_session`，不会去猜「最新的会话」（同一项目的其他 opencode 实例共享会话列表）。
 - Codex 的目录信任：在 git 仓库里只认仓库根目录那一条（信任过父目录不算），`-c projects."<dir>".trust_level="trusted"` 也只在 git 仓库外生效（后出现的 `untrusted` 会撤销）。hook 信任按 Codex 源码的算法（`codex-rs` 的 `hook_hash`：规范化 hook 定义的 JSON 做 sha256）逐条核对 `[hooks.state]`，仓库搬家、hook 被禁用都会被识别。这依赖 Codex 0.160 的算法，Codex 改算法后 `am` 会一直等待信任，需要跟着更新。`config.toml` 用 TOML 解析器读取，解析失败按「未信任」处理。
 - Codex 文档只说 SubagentStart/Stop 带 `agent_id`；如果它自己的子 agent 的其他事件不带，这些事件会影响父 agent 的状态。
 - 读写依赖 Claude / Codex 对话记录的内部格式，升级后用 e2e 测试回归。
+- dsh 的上报依赖 dsh 和 deepseek-harness-tui 尚未稳定的内部接口（`tui/submit`、`tuiChat.agent`、`session/event` 的事件类型），两者升级后用 `AM_E2E_KINDS=dsh` 的 e2e 回归。dsh 的提问面板只能人在它的会话里回答，`am approve` / `am deny` 会拒绝；审批只支持单次（没有 `--always`）。`--model` 会整体替换 profile 里 `agent-default-model` 那一行的 config。
 
 ## shell-ask
 
@@ -128,7 +132,7 @@ echo 'source-file -q ~/.config/agent-master/shell-ask.tmux' >> ~/.tmux.conf
 pnpm test            # 单元测试（含真实 tmux、真实 hook 脚本）
 pnpm typecheck
 pnpm test:e2e        # 真实 agent，花少量模型额度：
-                     #   agent：AM_E2E_KINDS=claude,codex,opencode；AM_E2E_LEAD=1 再跑「主 agent 被 /am 唤起后派活」
+                     #   agent：AM_E2E_KINDS=claude,codex,opencode（dsh 装好后可加上）；AM_E2E_LEAD=1 再跑「主 agent 被 /am 唤起后派活」
                      #   shell-ask：需要 Docker，起 remote-sim 容器
 pnpm sim:up / sim:down
 ```

@@ -21,7 +21,7 @@ After `am start`, tell the user the session name so they can watch it. Never run
 ## Workflow
 
 ```bash
-am start reviewer --kind codex                 # claude | codex | opencode; returns once it accepts input
+am start reviewer --kind codex                 # claude | codex | opencode | dsh; returns once it accepts input
 am prompt reviewer - --wait --timeout 600000 <<'EOF'
 Review the uncommitted changes in /path/to/repo. Report only actionable bugs, with file:line.
 EOF

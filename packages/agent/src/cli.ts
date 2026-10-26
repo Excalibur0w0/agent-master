@@ -23,9 +23,9 @@ import { AmError } from "./drivers/index.ts";
 import { installGlobal, installProject, uninstallGlobal } from "./install.ts";
 import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
 
-const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode) in tmux
+const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode / dsh) in tmux
 
-  am start <name> --kind <claude|codex|opencode> [--cwd DIR] [--model M] [--env K=V]...
+  am start <name> --kind <claude|codex|opencode|dsh> [--cwd DIR] [--model M] [--env K=V]...
            [--window] [--timeout MS] [-- <native agent args>]
                                         Runs in its own tmux session am-<name>; --window uses a new window of the current session
   am list                               All agents and their states

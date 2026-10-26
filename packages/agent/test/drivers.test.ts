@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import { claude, claudeHookSettings } from "../src/drivers/claude.ts";
 import { codex, codexDirectoryTrusted, codexHookArgs, codexHookHash, codexHooksTrusted, trustOverrides } from "../src/drivers/codex.ts";
+import { dsh, dshModelPatch, dshReporterPatch } from "../src/drivers/dsh.ts";
 import { shellCommand } from "../src/drivers/types.ts";
 import { opencode } from "../src/drivers/opencode.ts";
 import type { AgentRecord } from "../src/registry.ts";
@@ -219,4 +220,49 @@ test("opencode reads only the pane's own session, never another instance's lates
   } finally {
     quiet.server.close();
   }
+});
+
+test("dsh starts its TUI with am's reporter overlay, plus a model overlay for --model", async () => {
+  const cache = await mkdtemp(join(tmpdir(), "am-dsh-cache-"));
+  const previous = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = cache;
+  try {
+    const { command } = await dsh.launch({ cwd: "/tmp", model: "deepseek/deepseek-v4-flash", args: ["--resume", "s1"] });
+    assert.equal(command[0], "dshcli");
+    assert.deepEqual([command[1], command[3], ...command.slice(5)], ["--patch", "--patch", "--resume", "s1"], "overlays go before the TUI's own args");
+    const reporter = await readFile(command[2], "utf8");
+    assert.match(reporter, /id: am-reporter/);
+    assert.match(reporter, /name: ".*\/dsh\/reporter\.js"/);
+    assert.match(await readFile(command[4], "utf8"), /id: agent-default-model\n  config:\n    provider: "deepseek"\n    model: "deepseek-v4-flash"/);
+    assert.equal((await dsh.launch({ cwd: "/tmp", args: [] })).command.length, 3, "no --model, no model overlay");
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = previous;
+  }
+  assert.throws(() => dshModelPatch("deepseek-v4-flash"), /<provider>\/<model>/);
+  // Paths are YAML double-quoted strings, safe for spaces and quotes.
+  assert.match(dshReporterPatch('/a b/"r".js', "/c"), /name: "\/a b\/\\"r\\".js"/);
+});
+
+test("dsh answers approvals with the TUI's own keys and refuses what only the user can answer", async () => {
+  const keys: string[][] = [];
+  const tmuxStub = { sendKeys: async (_pane: string, ...k: string[]) => void keys.push(k) };
+  const rec = record({ kind: "dsh", state: "blocked", pending: "6f1c-approval" });
+  await dsh.approve(tmuxStub as never, rec, "once");
+  await dsh.deny(tmuxStub as never, rec);
+  await dsh.interrupt(tmuxStub as never, rec);
+  assert.deepEqual(keys, [["y"], ["n"], ["Escape"]]);
+  await assert.rejects(dsh.approve(tmuxStub as never, rec, "always"), /one-time/);
+  await assert.rejects(dsh.approve(tmuxStub as never, { ...rec, pending: "question-1" }, "once"), /asking a question/);
+  await assert.rejects(dsh.deny(tmuxStub as never, { ...rec, pending: "question-1" }), /asking a question/);
+  assert.equal(keys.length, 3, "nothing typed into a question panel");
+});
+
+test("dsh reads the reply file its reporter keeps", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "am-dsh-reply-"));
+  const file = join(dir, "session-a.txt");
+  await writeFile(file, "pong");
+  assert.equal(await dsh.readReply(record({ kind: "dsh", transcript: file })), "pong");
+  assert.equal(await dsh.readReply(record({ kind: "dsh", transcript: join(dir, "missing.txt") })), "", "no turn finished yet");
+  await assert.rejects(dsh.readReply(record({ kind: "dsh" })), /not sure yet/);
 });

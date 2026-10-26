@@ -1,6 +1,6 @@
 import type { Tmux } from "@agent-master/tmux";
 
-export const AGENT_KINDS = ["claude", "codex", "opencode"] as const;
+export const AGENT_KINDS = ["claude", "codex", "opencode", "dsh"] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
 /**
@@ -19,20 +19,21 @@ export interface AgentRecord {
   cwd: string;
   startedAt: number;
   paneDead: boolean;
-  /** Last state written by a hook (claude, codex) or by `am` itself. */
+  /** Last state written by a hook (claude, codex), am's dsh reporter, or `am` itself. */
   state: AgentState;
   detail: string;
   event: string;
   updatedAt: number;
   session: string;
+  /** The agent's transcript; for dsh, a file holding its latest turn's final reply. */
   transcript: string;
   /** Prompt id (claude) or turn id (codex) of the latest submitted prompt. */
   turn: string;
   /** Transcript size when the latest prompt was submitted. */
   offset: number;
-  /** Count of prompts the agent accepted (claude, codex); only UserPromptSubmit moves it. */
+  /** Count of prompts the agent accepted (claude, codex, dsh); only UserPromptSubmit moves it. */
   seq: number;
-  /** tool_use_id of the request the agent is blocked on, if any. */
+  /** What the agent is blocked on: a checksum of tool name + input (claude, codex), or an approval id or `question-N` (dsh). */
   pending: string;
   /** opencode: base URL and password of the TUI's built-in server. */
   url: string;

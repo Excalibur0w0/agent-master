@@ -1,5 +1,5 @@
 ---
-description: "Coordinate other coding agents (Claude Code, Codex, opencode) in tmux panes with the am CLI: start a helper, hand it a task, wait for it, read its reply."
+description: "Coordinate other coding agents (Claude Code, Codex, opencode, dsh) in tmux panes with the am CLI: start a helper, hand it a task, wait for it, read its reply."
 argument-hint: <what to delegate>
 disable-model-invocation: true
 ---

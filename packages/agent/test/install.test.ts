@@ -14,7 +14,7 @@ function frontmatter(content: string): Record<string, string> {
 }
 
 test("every target is explicit-only, in the format that agent understands", async () => {
-  const [claude, codexSkill, codexPolicy, opencode] = renderTargets(await guide(), { claude: "/c", codex: "/x", opencode: "/o" });
+  const [claude, codexSkill, codexPolicy, opencode, dsh] = renderTargets(await guide(), { claude: "/c", codex: "/x", opencode: "/o", dsh: "/d" });
 
   assert.equal(claude.path, "/c/commands/am.md");
   assert.equal(frontmatter(claude.content)["disable-model-invocation"], "true");
@@ -28,7 +28,12 @@ test("every target is explicit-only, in the format that agent understands", asyn
   assert.equal(opencode.path, "/o/commands/am.md");
   assert.match(opencode.content, /\$ARGUMENTS/);
 
-  for (const file of [claude, codexSkill, opencode]) {
+  assert.equal(dsh.path, "/d/am/SKILL.md");
+  assert.equal(frontmatter(dsh.content).name, "am");
+  assert.equal(frontmatter(dsh.content)["disable-model-invocation"], "true");
+  assert.match(dsh.content, /Their request is the message that invoked this skill/);
+
+  for (const file of [claude, codexSkill, opencode, dsh]) {
     assert.doesNotMatch(file.content, /\{\{REQUEST\}\}/);
     // The description contains ": ", which strict YAML rejects in a plain scalar.
     assert.match(frontmatter(file.content).description, /^".*"$/);

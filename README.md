@@ -38,7 +38,7 @@ packages/agent/bin/am install   # ~/.local/bin/am + 三个 agent 的全局 /am�
 | opencode | `/am <要委派的事>` | 自定义命令；项目里的 `.agents/skills/am` 用 `opencode.json` 的 `permission.skill.am: deny` 对模型隐藏 | `~/.config/opencode/commands/am.md` / `.opencode/commands/am.md` |
 | dsh | `/am <要委派的事>` | skill 带 `disable-model-invocation: true`：不进模型的技能目录，只在用户消息里出现 `/am` 时注入；项目里 `.dsh/skills` 排在 `.agents/skills` 前面，盖住给 Codex 的那份 | `~/.dsh/skills/am/` / `.dsh/skills/am/` |
 
-dsh 的终端界面要把不是它自己命令的 `/skill名` 当消息发出去，`/am` 才能用（deepseek-harness-tui 需要支持这一点）；在那之前可以把 `/am` 写在句中，例如「请按 /am 处理：…」。不用 `.claude/skills/am` 是因为 opencode 也会读它，而且不认 `disable-model-invocation`。`am prompt` 遇到以 `/` 开头的内容会逐字输入第一行，因为粘贴进去的 `/xxx` 不会被当成斜杠命令。
+dsh 的 `/am` 需要较新的 deepseek-harness-tui：它把不是 TUI 自己命令、但正好是用户可调用 skill 的 `/名字` 当消息发给 agent；旧版本会提示「未知命令」，这时可以把 `/am` 写在句中，例如「请按 /am 处理：…」。不用 `.claude/skills/am` 是因为 opencode 也会读它，而且不认 `disable-model-invocation`。`am prompt` 遇到以 `/` 开头的内容会逐字输入第一行，因为粘贴进去的 `/xxx` 不会被当成斜杠命令。
 
 ```sh
 am start reviewer --kind codex            # 开在独立的 tmux 会话 am-reviewer；就绪后返回

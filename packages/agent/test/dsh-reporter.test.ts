@@ -53,7 +53,12 @@ async function until(expected: Record<string, string>): Promise<void> {
 test("the reporter mirrors the dsh TUI's lifecycle onto its tmux pane", async () => {
   const replyDir = await mkdtemp(join(tmpdir(), "am-dsh-replies-"));
   const first = agent("session-a");
-  const services: Record<string, any> = { tuiConsole: { isOpen: false }, tuiChat: { agent: first } };
+  const services: Record<string, any> = {
+    tuiConsole: { isOpen: false },
+    tuiChat: { agent: first, cwd: "/w", slash() {} },
+    tuiCommands: { list: () => [{ name: "session" }, { name: "exit", aliases: ["quit"] }] },
+    skills: { get: async (name: string) => (name === "am" ? { invocation: { userInvocable: true } } : name === "hidden" ? { invocation: { userInvocable: false } } : undefined) },
+  };
   const { ctx, emit, dispose } = fakeContext(services);
   apply(ctx, { replyDir });
   try {
@@ -88,21 +93,34 @@ test("the reporter mirrors the dsh TUI's lifecycle onto its tmux pane", async ()
     await until({ "@am_state": "idle", "@am_event": "Stop", "@am_detail": "" });
     assert.equal(await readFile(replyFile, "utf8"), "pong");
 
-    // An idle "/" line is a TUI command: accepted, but no turn starts.
-    emit("tui/submit", "/session");
-    await until({ "@am_seq": "2", "@am_state": "idle" });
+    // An idle "/" line is a TUI command, or nothing: accepted, but no turn starts.
+    for (const [index, line] of ["/session", "/quit now", "/nosuch x", "/hidden"].entries()) {
+      emit("tui/submit", line);
+      await until({ "@am_seq": String(2 + index), "@am_state": "idle" });
+    }
+    // Unless it names a user-invocable skill: the TUI sends it, and dsh injects the skill.
+    emit("tui/submit", "/am ask codex");
+    await until({ "@am_seq": "6", "@am_state": "working" });
+    emit("session/event", first.session, { type: "turn/end", data: { turn: 2, reason: { kind: "completed" } } });
+    await until({ "@am_state": "idle" });
+    // A TUI without that routing runs every idle "/" line as a command.
+    const { slash } = services.tuiChat;
+    delete services.tuiChat.slash;
+    emit("tui/submit", "/am ask codex");
+    await until({ "@am_seq": "7", "@am_state": "idle" });
+    services.tuiChat.slash = slash;
 
     emit("tui/submit", "long task");
-    emit("session/event", first.session, { type: "turn/start", data: { turn: 2 } });
+    emit("session/event", first.session, { type: "turn/start", data: { turn: 3 } });
     assert.equal(await readFile(replyFile, "utf8"), "", "a new turn has no reply yet");
-    emit("session/event", first.session, { type: "turn/end", data: { turn: 2, reason: { kind: "aborted", reason: { kind: "user" } } } });
+    emit("session/event", first.session, { type: "turn/end", data: { turn: 3, reason: { kind: "aborted", reason: { kind: "user" } } } });
     await until({ "@am_state": "idle", "@am_detail": "interrupted" });
 
     // /new: the TUI moved to another Agent, and its replies go to another file.
     const second = agent("session-b");
     services.tuiChat.agent = second;
     emit("tui/submit", "again");
-    await until({ "@am_session": "session-b", "@am_transcript": join(replyDir, "session-b.txt"), "@am_seq": "4" });
+    await until({ "@am_session": "session-b", "@am_transcript": join(replyDir, "session-b.txt"), "@am_seq": "9" });
     emit("agent/status", { agent: first, status: "idle" });
     emit("agent/status", { agent: second, status: "running" });
     await until({ "@am_state": "working", "@am_event": "Running" });

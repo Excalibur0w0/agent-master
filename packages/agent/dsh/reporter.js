@@ -68,10 +68,14 @@ export function apply(ctx, config = {}) {
   };
   const set = (option, value) => ["set-option", "-p", "-t", pane, option, tmuxArg(String(value))];
 
-  /** Writes the whole state at once; `event` names what moved it, like a hook event. */
-  const publish = (event) => {
+  /**
+   * Writes the whole state in one tmux call; `event` names what moved it, like a
+   * hook event, and `also` are tmux commands that must land in the same call.
+   */
+  const publish = (event, ...also) => {
     const wait = waits[0];
     tmux(
+      ...also,
       set("@am_event", event),
       set("@am_state", wait ? "blocked" : running ? "working" : "idle"),
       set("@am_detail", wait ? wait.detail : running ? "" : detail),
@@ -119,14 +123,36 @@ export function apply(ctx, config = {}) {
     return () => clearInterval(timer);
   }, "am reporter readiness");
 
-  // The TUI took a line. @am_seq only ever moves here, so `am prompt` can tell its
-  // prompt was accepted. An idle "/" line is a TUI command, not a turn.
-  ctx.on("tui/submit", (line) => {
+  /**
+   * Whether the TUI makes this line a turn, decided as its input routing does: an
+   * idle "/name" line runs a TUI command, unless no command has that name and a
+   * user-invocable skill does (that is how /am reaches dsh). A TUI without that
+   * routing (no `slash`) runs every idle "/" line as a command.
+   */
+  const startsTurn = async (line) => {
+    const text = String(line).trim();
+    if (running || !text.startsWith("/")) return true;
+    const chat = ctx.get("tuiChat");
+    if (typeof chat?.slash !== "function") return false;
+    const name = text.slice(1).split(/\s+/, 1)[0];
+    const commands = ctx.get("tuiCommands")?.list() ?? [];
+    if (commands.some((command) => command.name === name || command.aliases?.includes(name))) return false;
+    try {
+      const skill = await ctx.get("skills")?.get(name, { cwd: chat.cwd, scope: chat.agent });
+      return skill?.invocation?.userInvocable === true;
+    } catch {
+      return false;
+    }
+  };
+
+  // The TUI took a line. @am_seq only ever moves here, and together with the
+  // state, so `am prompt --wait` never sees the prompt accepted but still idle.
+  ctx.on("tui/submit", async (line) => {
     bind();
+    const turn = await startsTurn(line);
     detail = "";
-    if (running || !String(line).trimStart().startsWith("/")) running = true;
-    tmux(["set-option", "-p", "-F", "-t", pane, "@am_seq", "#{e|+:#{@am_seq},1}"]);
-    publish("UserPromptSubmit");
+    if (turn) running = true;
+    publish("UserPromptSubmit", ["set-option", "-p", "-F", "-t", pane, "@am_seq", "#{e|+:#{@am_seq},1}"]);
   });
 
   ctx.on("agent/status", ({ agent, status }) => {

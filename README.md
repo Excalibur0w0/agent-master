@@ -60,6 +60,8 @@ am stop reviewer
 
 所有命令支持 `--json`。每个 agent 一个后台会话，`am list` 的 SESSION 列就是会话名；在会话里可以直接接管（输入、Esc、批准），`am stop` 会连同会话一起关掉。
 
+通过 `/am` 派活时，如果主 agent 能在后台运行命令、并在命令结束时被唤醒（Claude Code 的 Bash 后台运行就可以），指南会让它不再前台干等：用不带 `--wait` 的 `am prompt` 派出任务后，把 `am wait <name>` 放到后台，然后告诉你谁在干活，自己接着做别的事或结束这一轮；等对方做完（idle）、需要人决定（blocked）或退出时再被唤醒处理。没有这种能力的 agent 仍然用 `--wait --timeout` 前台等待。
+
 OpenCode 1.x / 2.x 会按 `opencode --version` 自动适配。2.x 使用独立的本机 `serve` 服务和绑定会话的 TUI，模型在创建会话时设置；`am stop` 或关闭 TUI 会一并退出该服务。2.x 的状态、权限、表单和回复通过 `/api` 读取，发送确认使用持久化的用户消息 ID，因此快速完成的回复也不会漏掉确认。
 
 ### dsh（dshcli）

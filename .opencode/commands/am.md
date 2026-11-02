@@ -44,6 +44,17 @@ Add `--json` to any command for machine-readable output. Names match `[a-z][a-z0
 
 States: `starting`, `idle` (ready for input), `working`, `blocked` (waiting for a human decision), `exited`, `unknown`.
 
+## Waiting without blocking
+
+A delegated task can take many minutes. If your tools can run a command in the background and wake you when it exits (Claude Code's Bash tool with `run_in_background` can; a shell `&` cannot), do not wait in the foreground:
+
+1. Send the task without `--wait`. `am prompt` still returns only once the agent has received it.
+2. Run `am wait <name>` in the background, without `--timeout`, one per agent. It ends when the agent is `idle`, `blocked` or `exited`, and prints which.
+3. Tell the user which agents are working, then go on with other work or end your turn. Do not poll `am status` meanwhile.
+4. When it wakes you: `idle` → `am read <name>`; `blocked` → follow the rules below, and once it is answered, run another background `am wait`; `exited` → tell the user.
+
+Without such a tool, wait with `--wait --timeout` as in the workflow above.
+
 ## Rules
 
 - **Give full context.** The other agent cannot see your conversation. State the goal, the paths, and the expected output format in the prompt.

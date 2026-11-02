@@ -8,6 +8,7 @@ MCP servers 在独立的 [agent-master-mcp](https://github.com/Excalibur0w0/agen
 packages/
   tmux/         @agent-master/tmux       tmux CLI 的类型化封装 + pane 前台进程识别
   agent/        @agent-master/agent      am：在 tmux 里启动、驱动、协同 claude / codex / opencode
+  router/       @agent-master/router     am-router：建在 am 之上的常驻派活会话
   shell-ask/    @agent-master/shell-ask  一句话 → 一行 shell 命令，填入当前 pane（本机或 ssh 远端）
 infra/
   remote-sim/   @agent-master/remote-sim Docker 模拟的远程 Linux 服务器（Ubuntu 24.04 + bash + sshd）
@@ -25,6 +26,7 @@ infra/
 ```sh
 pnpm install
 packages/agent/bin/am install   # ~/.local/bin/am + 三个 agent 的全局 /am、$am 入口（只写带 am 标记的文件，不覆盖别人的）
+packages/router/bin/am-router install   # 可选：~/.local/bin/am-router
 ```
 
 ## am：agent 协同
@@ -132,6 +134,31 @@ hook（dsh 是插件）把状态写在 agent 所在 pane 的 `@am_*` 选项上�
 - 读写依赖 Claude / Codex 对话记录的内部格式，升级后用 e2e 测试回归。
 - dsh 的上报依赖 dsh 和 deepseek-harness-tui 尚未稳定的内部接口（`tui/submit`、`tuiChat.agent`、`session/event` 的事件类型），两者升级后用 `AM_E2E_KINDS=dsh` 的 e2e 回归。dsh 的提问面板只能人在它的会话里回答，`am approve` / `am deny` 会拒绝；审批只支持单次（没有 `--always`）。`--model` 会整体替换 profile 里 `agent-default-model` 那一行的 config。
 
+## am-router：常驻的派活会话
+
+建在 am 之上的一层，参考 DeepSeek Super-agent 的 router–worker 设计：起一个常驻的 agent 会话，你只跟它说话；它把每个请求原样交给一个 worker（用 am 启动），在后台等 worker 做完，再把结果或需要你决定的事告诉你。它自己不看代码、不拆任务，也不替你批准。
+
+```sh
+cd ~/code/my-app
+am-router start          # 常驻会话 am-router；worker 默认在当前目录、默认用 claude
+am open router           # 进去跟它说话；它派出的 worker 也在 am list 里，随时 am open 接管
+am stop router
+```
+
+| 参数 | 作用 |
+| --- | --- |
+| `[name]` | 会话名，默认 `router`；可以同时开多个 |
+| `--kind` / `--model` | router 自己用的 agent 和模型（默认 claude）。它只派活，可以用便宜的模型 |
+| `--project DIR` | worker 默认的工作目录（默认当前目录）；对话里也可以指定别的目录 |
+| `--worker-kind` | worker 默认用的 agent（默认 claude）；对话里也可以指定 |
+| `-- 原生参数` | 传给 router 自己的 agent |
+
+router 怎么知道自己的角色：`am-router start` 在 `~/.local/state/agent-master/router/<name>/` 写入内容相同的 `CLAUDE.md` 和 `AGENTS.md`（正文是 `packages/router/ROUTER.md`），再用 `am start <name> --cwd` 在这个目录启动。规则以项目说明文件的形式存在，各家 agent 都会加载，上下文压缩后也还在；目录里没有代码，它也就没有代码可看。同一目录下的 `.claude/settings.json` 放行它派活用的 am 子命令，`am approve`、`deny`、`keys`、`open` 仍然每次都问你。每次 start 都会重写这些文件，所以 router 还在运行时 start 会被拒绝。
+
+- 第一次启动会停在 Claude 的目录信任确认上，另开终端 `am open router` 确认一次即可。
+- 后台等待依赖「后台命令结束时唤醒 agent」，目前只在 Claude Code 上验证过。用其他 agent 当 router 时，它派完活不会等待，你下次说话时它再查进度。
+- 分层约束：router 只通过 am 的命令行驱动 agent，am 不知道 router 的存在（测试会检查 `packages/agent` 没有引用它）。
+
 ## shell-ask
 
 在任意 tmux pane 里按 `prefix + a` → 弹窗里描述需求 → 生成一行命令 → Enter 填入原 pane（**不执行**）。远端什么都不用装。
@@ -164,6 +191,7 @@ pnpm test            # 单元测试（含真实 tmux、真实 hook 脚本）
 pnpm typecheck
 pnpm test:e2e        # 真实 agent，花少量模型额度：
                      #   agent：AM_E2E_KINDS=claude,codex,opencode（dsh 装好后可加上）；AM_E2E_LEAD=1 再跑「主 agent 被 /am 唤起后派活」
+                     #   router：AM_E2E_ROUTER=1 跑「router 派活给 worker、后台等待、被唤醒后汇报」
                      #   shell-ask：需要 Docker，起 remote-sim 容器
 pnpm sim:up / sim:down
 ```

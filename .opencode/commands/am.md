@@ -30,7 +30,7 @@ am stop reviewer                               # when you no longer need it
 
 | Command | Purpose |
 | --- | --- |
-| `am start <name> --kind K [--cwd DIR] [--model M] [-- native args]` | Launch the agent in tmux session `am-<name>`. Default cwd is yours. |
+| `am start <name> --kind K [--cwd DIR] [--model M] [--bin EXE] [-- native args]` | Launch the agent in tmux session `am-<name>`. Default cwd is yours. `--bin` runs a wrapper that accepts the same arguments as `claude`/`codex` (e.g. a codex launched through a gateway); it must be a command on PATH or a path relative to `--cwd`, not a shell alias. |
 | `am prompt <name> <text\|-> [--wait] [--timeout MS]` | Submit a task (`-` reads stdin). `--wait` returns once it is `idle` or `blocked`. |
 | `am wait <name> [--until idle,blocked] [--timeout MS]` | Wait for a state. |
 | `am status <name>` / `am list` | Current state; `detail` explains `blocked` (e.g. the command awaiting approval). |

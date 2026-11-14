@@ -14,11 +14,21 @@ export interface StatusView {
   detail: string;
 }
 
+export interface LaunchOptions {
+  cwd: string;
+  model?: string;
+  args: string[];
+  /** Replaces the driver's own executable: an argument-compatible wrapper, such as a gateway's launcher. */
+  bin?: string;
+}
+
 export interface Driver {
   readonly kind: AgentKind;
   /** Problems worth telling the user about before launching (never fatal). */
   preflight(cwd: string, args: string[]): Promise<string[]>;
-  launch(options: { cwd: string; model?: string; args: string[] }): Promise<LaunchPlan>;
+  /** Whether `--bin` can replace the CLI this driver launches. */
+  readonly binCompatible?: boolean;
+  launch(options: LaunchOptions): Promise<LaunchPlan>;
   /** Resolves once the agent accepts input; `reload` re-reads the pane record. */
   waitReady(tmux: Tmux, reload: () => Promise<AgentRecord>, deadline: number): Promise<void>;
   status(record: AgentRecord): Promise<StatusView>;

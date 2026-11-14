@@ -56,6 +56,7 @@ async function isTrusted(cwd: string): Promise<boolean | undefined> {
 
 export const claude: Driver = {
   kind: "claude",
+  binCompatible: true,
   acceptTimeoutMs: 8000,
 
   async preflight(cwd) {
@@ -65,8 +66,8 @@ export const claude: Driver = {
     return [];
   },
 
-  async launch({ model, args }) {
-    return { command: ["claude", "--settings", await settingsFile(), ...(model ? ["--model", model] : []), ...args] };
+  async launch({ model, args, bin }) {
+    return { command: [bin ?? "claude", "--settings", await settingsFile(), ...(model ? ["--model", model] : []), ...args] };
   },
 
   async waitReady(_tmux, reload, deadline) {

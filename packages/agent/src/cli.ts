@@ -25,9 +25,11 @@ import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
 
 const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode / dsh) in tmux
 
-  am start <name> --kind <claude|codex|opencode|dsh> [--cwd DIR] [--model M] [--env K=V]...
+  am start <name> --kind <claude|codex|opencode|dsh> [--bin PATH] [--cwd DIR] [--model M] [--env K=V]...
            [--window] [--timeout MS] [-- <native agent args>]
                                         Runs in its own tmux session am-<name>; --window uses a new window of the current session
+                                        --bin runs another executable with the kind's arguments (a provider wrapper
+                                        such as a gateway's launcher for codex or claude)
   am list                               All agents and their states
   am open <name>                        Switch to its tmux session (outside tmux, print the attach command)
   am status <name>                      One agent's state
@@ -68,6 +70,7 @@ async function main(argv: string[]): Promise<number> {
     allowPositionals: true,
     options: {
       kind: { type: "string" },
+      bin: { type: "string" },
       cwd: { type: "string" },
       model: { type: "string" },
       window: { type: "boolean" },
@@ -102,6 +105,7 @@ async function main(argv: string[]): Promise<number> {
       const agent = await startAgent(tmux, {
         name: target(),
         kind,
+        bin: values.bin,
         cwd: values.cwd,
         model: values.model,
         env,

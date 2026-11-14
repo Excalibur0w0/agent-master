@@ -118,6 +118,30 @@ test("agents start without update dialogs that would take am's keystrokes", asyn
   }
 });
 
+test("--bin replaces the executable of argument-compatible drivers", async () => {
+  assert.equal(codex.binCompatible, true);
+  assert.equal(claude.binCompatible, true);
+  assert.equal(opencode.binCompatible, undefined);
+  assert.equal(dsh.binCompatible, undefined);
+
+  const c = await codex.launch({ cwd: "/tmp", args: ["--", "exec", "hi"], bin: "/opt/acme/acme-codex" });
+  assert.equal(c.command[0], "/opt/acme/acme-codex");
+  assert.ok(c.command.some((arg) => arg.startsWith("hooks.SessionStart=[{hooks=[{type=\"command\"")));
+
+  const dir = await mkdtemp(join(tmpdir(), "am-claude-cache-"));
+  const originalCache = process.env.XDG_CACHE_HOME;
+  try {
+    process.env.XDG_CACHE_HOME = dir;
+    const cl = await claude.launch({ cwd: "/tmp", args: [], bin: "acme-claude" });
+    assert.equal(cl.command[0], "acme-claude");
+    assert.equal(cl.command[1], "--settings");
+  } finally {
+    if (originalCache === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = originalCache;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("hook commands are shell-quoted only when the path needs it", () => {
   assert.equal(shellCommand("/Users/me/agent-master/packages/agent/hooks/codex.sh"), "/Users/me/agent-master/packages/agent/hooks/codex.sh");
   assert.equal(shellCommand("/Users/me/my repo/hooks/claude.sh"), "'/Users/me/my repo/hooks/claude.sh'");

@@ -43,6 +43,8 @@ export interface StartOptions {
   cwd?: string;
   model?: string;
   args?: string[];
+  /** An argument-compatible wrapper that replaces the kind's own executable (`--bin`). */
+  bin?: string;
   /** Extra environment for the agent process. */
   env?: Record<string, string>;
   /** Default: its own session. `window`: a new window in the caller's session. */
@@ -107,14 +109,30 @@ function tmuxPath(tmux: Tmux): string {
   }
 }
 
+/** Whether `--bin` names an executable: a path relative to cwd, or a command on PATH. */
+function executable(bin: string, cwd: string): boolean {
+  try {
+    execFileSync("/bin/sh", ["-c", 'command -v "$1" >/dev/null 2>&1', "sh", bin], { cwd, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function startAgent(tmux: Tmux, options: StartOptions): Promise<AgentView> {
   const { name, kind } = options;
   if (!NAME_PATTERN.test(name)) throw new AmError("bad_name", `name must match ${NAME_PATTERN}`);
 
   const driver = DRIVERS[kind];
   const cwd = resolve(options.cwd ?? process.cwd());
+  if (options.bin) {
+    // A wrapper must take the same arguments as the CLI the driver knows how to
+    // drive; drivers whose launch command is not that CLI cannot offer this.
+    if (!driver.binCompatible) throw new AmError("unsupported", `--bin is not supported for ${kind}; it replaces the CLI of claude or codex`);
+    if (!executable(options.bin, cwd)) throw new AmError("bin_not_found", `--bin ${options.bin} is not an executable file or a command on PATH`);
+  }
   for (const warning of await driver.preflight(cwd, options.args ?? [])) options.warn?.(warning);
-  const plan = await driver.launch({ cwd, model: options.model, args: options.args ?? [] });
+  const plan = await driver.launch({ cwd, model: options.model, args: options.args ?? [], bin: options.bin });
 
   const gate = `am-go-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   // Without a running server there is nothing to lock against (and wait-for cannot start one).

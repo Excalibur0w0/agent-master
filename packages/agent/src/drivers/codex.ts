@@ -135,6 +135,7 @@ async function trustAnswered(record: AgentRecord): Promise<boolean> {
 
 export const codex: Driver = {
   kind: "codex",
+  binCompatible: true,
   // The first prompt creates the session (SessionStart, MCP servers) before UserPromptSubmit fires.
   acceptTimeoutMs: 20_000,
 
@@ -146,11 +147,11 @@ export const codex: Driver = {
     return warnings;
   },
 
-  async launch({ model, args }) {
+  async launch({ model, args, bin }) {
     const overrides = trustOverrides(args);
     return {
       // An update prompt at startup would take the first prompt's Enter as its answer.
-      command: ["codex", ...codexHookArgs(), "-c", "check_for_update_on_startup=false", ...(model ? ["-m", model] : []), ...args],
+      command: [bin ?? "codex", ...codexHookArgs(), "-c", "check_for_update_on_startup=false", ...(model ? ["-m", model] : []), ...args],
       fields: Object.keys(overrides).length ? { trustOverride: JSON.stringify(overrides) } : undefined,
     };
   },

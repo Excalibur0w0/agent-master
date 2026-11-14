@@ -51,7 +51,7 @@ am stop reviewer
 
 | 命令 | 作用 |
 | --- | --- |
-| `am start <name> --kind claude\|codex\|opencode\|dsh [--cwd] [--model] [--env K=V] [--window] [-- 原生参数]` | 在独立会话 `am-<name>` 里启动（`--window` 改为当前会话的新窗口）、注入状态上报、等就绪 |
+| `am start <name> --kind claude\|codex\|opencode\|dsh [--bin PATH] [--cwd] [--model] [--env K=V] [--window] [-- 原生参数]` | 在独立会话 `am-<name>` 里启动（`--window` 改为当前会话的新窗口）、注入状态上报、等就绪；`--bin` 换成同参数的兼容 CLI（仅 claude / codex） |
 | `am open <name>` | 切到它的会话（tmux 外打印 `tmux attach` 命令）；也可以 `prefix + s` 选 |
 | `am list` / `am status <name>` | 状态：`starting` `idle` `working` `blocked` `exited` `unknown`；`detail` 说明在等什么 |
 | `am prompt <name> <text\|-> [--wait] [--timeout]` | 粘贴 + 回车，并确认对方收到；blocked / working 时拒绝 |
@@ -95,6 +95,20 @@ am 启动时只在命令行上加 `--patch` 叠加层，不改 `~/.dsh` 里的 p
 - `dshcli` 不在 PATH 上，`am start` 会提前提示。
 - 报 `dsh exited right after starting`：`dshcli` 自己启动失败了（比如找不到带 FFI 的 Node、dsh 仓库不在同级目录）。在终端里直接运行 `dshcli` 能看到具体原因，对照 deepseek-harness-tui README 的「遇到问题」处理。
 - 报 `start_timeout`：界面没在时限内打开，用 `am open <name>` 看一下它停在哪里。
+
+### 其它兼容 CLI（`--bin`）
+
+`--bin PATH` 换掉 `--kind claude` / `--kind codex` 启动的可执行文件，参数、状态上报、回复读取、批准和中断仍按该 kind 的规则处理。适合包了一层 provider 网关、但命令行与 claude / codex 兼容的启动器：
+
+```sh
+am start gw --kind codex --bin my-codex-launcher      # 经网关启动的 Codex
+am start gwc --kind claude --bin my-claude-launcher   # 经网关启动的 Claude Code
+```
+
+- `--bin` 可以是命令名（按 PATH 查找），也可以是相对于 `--cwd` 的路径；验证失败时 `am start` 会在建 pane 前报 `bin_not_found`。
+- 包装器必须接受与对应 CLI 相同的参数。`opencode` 和 `dsh` 的启动命令不是单一的 agent CLI，不支持 `--bin`。
+- 用 `--bin` 启动的 agent 在 `am list` 里仍显示原 kind（`codex` / `claude`）。Codex 的目录信任和 hooks 信任与普通 codex 共用 `~/.codex/config.toml`，第一次仍要在它的会话里确认一次。
+- 包装器自己的前置条件不归 am 管：比如它依赖的本地网关要先运行起来。
 
 ### 状态从哪来
 

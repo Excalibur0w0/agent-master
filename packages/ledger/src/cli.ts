@@ -111,6 +111,9 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   const db = openLedger();
+  // The last process to close folds the WAL back into ledger.db, so the file alone holds the ledger:
+  // a copy of it is a backup, and other SQLite clients see everything.
+  process.once("exit", () => db.close());
 
   /** Fills a task's worker fields from am, and says so when am does not know the worker. */
   const withWorker = <F extends TaskFields>(fields: F): F => {

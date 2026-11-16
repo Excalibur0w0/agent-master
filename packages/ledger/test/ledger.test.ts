@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, copyFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -187,6 +188,16 @@ test("am ledger import brings an old LEDGER.md over once", async () => {
   assert.match(first.stdout, /imported 2 task\(s\) into router's ledger from .*LEDGER\.md: 1 in progress, 1 queued or paused/);
   assert.match((await run(["import", file])).stdout, /imported 0 task\(s\)[\s\S]*skipped \(already in the ledger\): 修登录\nskipped \(already in the ledger\): 旧方案/);
   assert.match((await run(["show"])).stdout, /### #2 旧方案 \(paused\)\n- Worker: none\n- Notes: Status before the move to SQLite: paused/);
+});
+
+test("am ledger closes the database, so ledger.db itself holds every write", async () => {
+  const { dir, run } = await setup();
+  assert.equal((await run(["add", "修登录"])).code, 0);
+  assert.equal((await run(["add", "x"])).code, 0);
+  assert.equal(existsSync(join(dir, "ledger.db-wal")), false, "no WAL is left behind");
+  const copy = join(dir, "copy.db");
+  await copyFile(join(dir, "ledger.db"), copy);
+  assert.deepEqual(listTasks(openLedger(copy), "router").map((task) => task.title), ["修登录", "x"], "a plain copy of the file is complete");
 });
 
 test("am ledger help needs no database", async () => {

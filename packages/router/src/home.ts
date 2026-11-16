@@ -6,20 +6,10 @@ import { fileURLToPath } from "node:url";
 const GUIDE = fileURLToPath(new URL("../ROUTER.md", import.meta.url));
 
 /** The am commands a router with permission prompts on runs without asking; approve, deny, keys and open still ask the user. */
-const ALLOWED = ["list", "status", "start", "prompt", "wait", "read", "interrupt", "stop", "profiles", "resume"];
+const ALLOWED = ["list", "status", "start", "prompt", "wait", "read", "interrupt", "stop", "profiles", "resume", "ledger"];
 
-/** The router keeps its ledger in its home; editing it never needs the user. */
+/** The markdown ledger routers kept before `am ledger`; `am router start` moves what it holds into the ledger once. */
 export const LEDGER = "LEDGER.md";
-
-export const LEDGER_TEMPLATE = `# Ledger
-
-<!-- Kept by the router (see "Ledger" in its CLAUDE.md / AGENTS.md). It survives router
-restarts: a new router reads it first. At most 4 tasks in progress; only the user closes one. -->
-
-## In progress
-
-## Queued
-`;
 
 export interface RouterOptions {
   /** Where workers run unless the user names another directory. */
@@ -37,9 +27,9 @@ export interface HomeFile {
 }
 
 /**
- * The router's working directory: one of its own, holding only its instructions
- * and its ledger, so the agent reads them as project instructions and keeps them
- * across compaction.
+ * The router's working directory: one of its own, holding only its instructions,
+ * so the agent reads them as project instructions and keeps them across
+ * compaction. Its ledger lives in the database behind `am ledger`.
  */
 export function routerHome(name: string): string {
   return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "agent-master", "router", name);
@@ -52,7 +42,7 @@ export function renderHome(guide: string, options: RouterOptions): HomeFile[] {
     .replaceAll("{{CONTRACT}}", options.contract ?? "none configured");
   const settings = {
     permissions: {
-      allow: [...ALLOWED.map((command) => `Bash(am ${command}:*)`), `Edit(./${LEDGER})`, `Write(./${LEDGER})`],
+      allow: ALLOWED.map((command) => `Bash(am ${command}:*)`),
     },
   };
   return [
@@ -63,22 +53,13 @@ export function renderHome(guide: string, options: RouterOptions): HomeFile[] {
   ];
 }
 
-/** Writes the router's instructions into `home`, replacing what an earlier start wrote; the ledger is created once and never replaced. */
+/** Writes the router's instructions into `home`, replacing what an earlier start wrote. */
 export async function writeHome(home: string, options: RouterOptions): Promise<void> {
   for (const file of renderHome(await readFile(GUIDE, "utf8"), options)) {
     const path = join(home, file.path);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, file.content);
   }
-  await writeFile(join(home, LEDGER), LEDGER_TEMPLATE, { flag: "wx" }).catch((error) => {
-    if (error.code !== "EEXIST") throw error;
-  });
-}
-
-/** Whether the ledger lists any task (a `### ` heading outside comments). */
-export async function ledgerHasTasks(home: string): Promise<boolean> {
-  const text = await readFile(join(home, LEDGER), "utf8").catch(() => "");
-  return /^### \S/m.test(text.replace(/<!--[\s\S]*?-->/g, ""));
 }
 
 /** What `am router start` was given, so `am router restart` can start a fresh session the same way. */

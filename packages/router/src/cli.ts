@@ -1,10 +1,10 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { access, stat } from "node:fs/promises";
+import { access, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { ledgerHasTasks, loadStart, routerHome, saveStart, writeHome, type SavedStart } from "./home.ts";
+import { LEDGER, loadStart, routerHome, saveStart, writeHome, type SavedStart } from "./home.ts";
 
 const USAGE = `am router — a long-running agent session that hands your requests to other coding agents through am
 
@@ -15,17 +15,18 @@ const USAGE = `am router — a long-running agent session that hands your reques
                      --contract: the worker contract am appends to what the router sends workers
                      (default: ${defaultContract()}, when it exists)
                      A claude router starts with --dangerously-skip-permissions unless you pass a permission mode after --
-                     When its LEDGER.md lists tasks, a new router is first asked to take them over
+                     Its ledger is am ledger (--router <name>); when it lists work, a new router is first asked to take
+                     it over. A LEDGER.md left in the router's directory by an older router is moved into it first
   am router restart [name]
-                     Replace a router with a fresh session started the same way; the new one picks up from LEDGER.md.
+                     Replace a router with a fresh session started the same way; the new one picks up from its ledger.
                      Run it from your own terminal, not from inside the router
   am router stop [name]
-                     Stop the router; its LEDGER.md stays for the next start
+                     Stop the router; its ledger stays for the next start
 
   Everything else goes through am: am list, am open <name>, ...`;
 
 const SKIP_PERMISSIONS = "--dangerously-skip-permissions";
-const TAKE_OVER = "Take over from LEDGER.md.";
+const TAKE_OVER = "Take over: your ledger lists work in flight (am ledger show).";
 
 class UsageError extends Error {}
 
@@ -67,7 +68,34 @@ function running(name: string): string | undefined {
   return state === "exited" ? undefined : state;
 }
 
-/** Writes the router's home and starts it there; on a ledger with tasks, asks it to take them over. */
+/**
+ * An older router kept its ledger as LEDGER.md in its home. Called while no
+ * router runs, so the file is final: its tasks move into am ledger once, and the
+ * file is renamed so neither a router nor a later start uses it again.
+ */
+async function migrateLedger(name: string, home: string): Promise<void> {
+  const file = join(home, LEDGER);
+  if (!(await access(file).then(() => true, () => false))) return;
+  const imported = am(["ledger", "import", file, "--router", name], true);
+  if (imported.status !== 0) throw new Error(`could not move ${file} into the ledger, so ${name} was not started: ${imported.stderr.trim()}`);
+  process.stdout.write(imported.stdout);
+  // To the second, so a later migration never overwrites an earlier one's file.
+  const done = `${file}.imported-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}`;
+  await rename(file, done);
+  process.stdout.write(`kept the old file as ${done}\n`);
+}
+
+/** Whether the router's ledger holds tasks in progress or queued. */
+function ledgerHasWork(name: string): boolean {
+  const list = am(["ledger", "list", "--router", name, "--json"], true);
+  try {
+    return list.status === 0 && JSON.parse(list.stdout).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Writes the router's home and starts it there; on a ledger with work, asks it to take it over. */
 async function launch(name: string, options: SavedStart): Promise<number> {
   // A Claude router runs without permission prompts unless its own arguments choose a mode.
   // It takes the flag: Claude Code ignores a bypass default written in project settings.
@@ -75,21 +103,24 @@ async function launch(name: string, options: SavedStart): Promise<number> {
   const agentArgs = options.kind === "claude" && !choosesMode ? [SKIP_PERMISSIONS, ...options.args] : options.args;
 
   const home = routerHome(name);
+  await migrateLedger(name, home);
   await writeHome(home, { project: options.project, workerKind: options.workerKind, contract: options.contract });
   await saveStart(home, { ...options, args: withoutResume(options.kind, options.args) });
   const started = am([
     "start", name, "--kind", options.kind, "--cwd", home,
     ...(options.model ? ["--model", options.model] : []),
+    // Its am ledger commands go to its own ledger.
+    "--env", `AM_ROUTER=${name}`,
     // Workers the router starts inherit it: am attaches the contract to what it sends them.
     ...(options.contract ? ["--env", `AM_CONTRACT=${options.contract}`] : []),
     ...(agentArgs.length ? ["--", ...agentArgs] : []),
   ]);
   if (started.status !== 0) return started.status ?? 1;
   if (!options.contract) process.stdout.write(`note: no worker contract (${defaultContract()} does not exist); workers get only the user's words\n`);
-  if (await ledgerHasTasks(home)) {
+  if (ledgerHasWork(name)) {
     const kickoff = am(["prompt", name, "-"], true, TAKE_OVER);
     if (kickoff.status !== 0) process.stderr.write(`am router: could not ask ${name} to take over its ledger: ${kickoff.stderr.trim()}\n`);
-    else process.stdout.write(`${name} is taking over the tasks in ${join(home, "LEDGER.md")}\n`);
+    else process.stdout.write(`${name} is taking over the work in its ledger (am ledger show --router ${name})\n`);
   }
   process.stdout.write(`${name} routes your requests to workers in ${options.project} unless you name another directory; talk to it with: am open ${name}\n`);
   return 0;

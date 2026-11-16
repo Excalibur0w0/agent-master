@@ -125,7 +125,7 @@ test("stop closes a running router through am and leaves its ledger", async () =
 test("am router ... reaches the router, and am -h documents it with every other command", async () => {
   const am = resolve(import.meta.dirname, "../../agent/bin/am");
   const help = await promisify(execFile)(am, ["-h"]);
-  for (const line of ["am start <name>", "am router start [name]", "am router restart [name]", "am router stop [name]", "am subscribe start [name]", "am subscribe stop [name]"]) {
+  for (const line of ["am start <name>", "am router start [name]", "am router restart [name]", "am router stop [name]", "am watcher start [name]", "am watcher stop [name]"]) {
     assert.ok(help.stdout.includes(line), line);
   }
   const routerHelp = await promisify(execFile)(am, ["router", "help"]);

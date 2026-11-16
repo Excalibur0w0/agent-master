@@ -1,31 +1,31 @@
-// The watcher loop: runs the source's watcher, keeps the feed state, and wakes
-// the subscriber through am whenever it is idle and something is owed to it.
-// No model runs here; the subscriber only wakes when there is news.
+// The feed loop: runs the source's poller, keeps the feed state, and wakes
+// the watcher through am whenever it is idle and something is owed to it.
+// No model runs here; the watcher only wakes when there is news.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 import { applySnapshot, batchPrompt, loadState, markDelivered, nextBatch, saveState, type FeedState } from "./feed.ts";
-import { logFile, stateFile, subscriberDir, type SubscriberConfig } from "./home.ts";
+import { logFile, stateFile, watcherDir, type WatcherConfig } from "./home.ts";
 
 export interface RunOptions {
-  /** How often to check whether the subscriber can take a batch. */
+  /** How often to check whether the watcher can take a batch. */
   tickMs?: number;
-  /** Wait before restarting a watcher that exited. */
+  /** Wait before restarting a poller that exited. */
   restartMs?: number;
 }
 
 const am = (args: string[], input?: string) =>
   spawnSync(process.env.AM_BIN ?? "am", args, { encoding: "utf8", input, env: withoutContract() });
 
-/** The subscriber takes no worker contract: it is not a worker, and its own rules differ. */
+/** The watcher takes no worker contract: it is not a worker, and its own rules differ. */
 export function withoutContract(): NodeJS.ProcessEnv {
   const { AM_CONTRACT: _, ...env } = process.env;
   return env;
 }
 
-export async function run(name: string, config: SubscriberConfig, options: RunOptions = {}): Promise<void> {
-  const dir = subscriberDir(name);
+export async function run(name: string, config: WatcherConfig, options: RunOptions = {}): Promise<void> {
+  const dir = watcherDir(name);
   mkdirSync(dir, { recursive: true });
   const log = (line: string) => {
     const text = `${new Date().toISOString()} ${line}`;
@@ -53,21 +53,21 @@ export async function run(name: string, config: SubscriberConfig, options: RunOp
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => void stop());
 
-  const startWatcher = () => {
+  const startPoller = () => {
     if (stopping) return;
-    const [command, ...args] = config.watch;
-    log(`watcher: ${config.watch.join(" ")}`);
+    const [command, ...args] = config.poll;
+    log(`poller: ${config.poll.join(" ")}`);
     const started = Date.now();
     let ended = false;
     const restart = (why: string) => {
       if (stopping || ended) return;
       ended = true;
-      // A watcher that dies right away is retried less often.
+      // A poller that dies right away is retried less often.
       const wait = options.restartMs ?? (Date.now() - started < 30_000 ? 60_000 : 10_000);
-      log(`watcher ${why}; restarting in ${Math.round(wait / 1000)}s`);
-      setTimeout(startWatcher, wait);
+      log(`poller ${why}; restarting in ${Math.round(wait / 1000)}s`);
+      setTimeout(startPoller, wait);
     };
-    child = spawn(command, args, { cwd: dir, env: { ...withoutContract(), AM_SUBSCRIBER_DIR: dir }, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(command, args, { cwd: dir, env: { ...withoutContract(), AM_WATCHER_DIR: dir }, stdio: ["ignore", "pipe", "pipe"] });
     child.on("error", (error) => restart(`failed: ${error.message}`));
     createInterface({ input: child.stdout! }).on("line", (line) => {
       let message: any;
@@ -78,14 +78,14 @@ export async function run(name: string, config: SubscriberConfig, options: RunOp
       }
       if (!Array.isArray(message?.pending)) {
         // Only counts and errors belong in the log; never a message's text.
-        log(`watcher printed a line that is not a snapshot (${line.length} chars), ignored`);
+        log(`poller printed a line that is not a snapshot (${line.length} chars), ignored`);
         return;
       }
       const { added, gone } = applySnapshot(state, message.pending);
       if (added || gone) log(`snapshot: ${state.pending.length} pending, ${added} new, ${gone} read elsewhere; ${state.queue.items.length} queued`);
       void persist();
     });
-    createInterface({ input: child.stderr! }).on("line", (line) => log(`watcher: ${line.slice(0, 300)}`));
+    createInterface({ input: child.stderr! }).on("line", (line) => log(`poller: ${line.slice(0, 300)}`));
     child.on("exit", (code, signal) => restart(`exited (${signal ?? code})`));
   };
 
@@ -96,7 +96,7 @@ export async function run(name: string, config: SubscriberConfig, options: RunOp
     const agent = status.status === 0 ? JSON.parse(status.stdout) : undefined;
     const note = agent ? `${agent.state}` : "not running";
     if (agent?.state !== "idle") {
-      if (note !== lastAgentNote) log(`subscriber ${name} is ${note}; ${state.queue.items.length + state.queue.gone.length} waiting`);
+      if (note !== lastAgentNote) log(`watcher ${name} is ${note}; ${state.queue.items.length + state.queue.gone.length} waiting`);
       lastAgentNote = note;
       return;
     }
@@ -113,7 +113,7 @@ export async function run(name: string, config: SubscriberConfig, options: RunOp
   };
 
   log(`started; ${state.pending.length} pending and ${state.queue.items.length} queued from before`);
-  startWatcher();
+  startPoller();
   const loop = () =>
     tick()
       .catch((error) => log(`tick failed: ${error instanceof Error ? error.message : String(error)}`))

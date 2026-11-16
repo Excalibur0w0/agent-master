@@ -34,9 +34,9 @@ importers:
         specifier: workspace:*
         version: link:../tmux
 
-  packages/subscriber: {}
-
   packages/tmux: {}
+
+  packages/watcher: {}
 
 packages:
 

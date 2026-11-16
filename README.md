@@ -9,7 +9,7 @@ packages/
   tmux/         @agent-master/tmux       tmux CLI 的类型化封装 + pane 前台进程识别
   agent/        @agent-master/agent      am：在 tmux 里启动、驱动、协同 claude / codex / opencode
   router/       @agent-master/router     am router：建在 am 之上的常驻派活会话
-  subscriber/   @agent-master/subscriber am subscribe：常驻、只读的消息订阅，整理需要你处理的消息
+  watcher/      @agent-master/watcher    am watcher：常驻、只读地盯消息，整理需要你处理的
   shell-ask/    @agent-master/shell-ask  一句话 → 一行 shell 命令，填入当前 pane（本机或 ssh 远端）
 infra/
   remote-sim/   @agent-master/remote-sim Docker 模拟的远程 Linux 服务器（Ubuntu 24.04 + bash + sshd）
@@ -65,8 +65,8 @@ am stop reviewer
 | `am resume <name>` / `am resume --all` | 用当初的启动参数重新起来，并接回它原来的会话；`--all` 恢复所有随 tmux 或机器重启丢掉的 agent |
 | `am forget <name>` | 删掉 am 对它的记录 |
 | `am router start\|restart\|stop` | 常驻的派活会话，见下文「am router」 |
-| `am subscribe start\|stop\|status\|list` | 常驻的只读消息订阅，见下文「am subscribe」 |
-| `am -h` / `am help` | 所有命令的说明，包括 `am router`、`am subscribe` |
+| `am watcher start\|stop\|status\|list` | 常驻、只读地盯消息，见下文「am watcher」 |
+| `am -h` / `am help` | 所有命令的说明，包括 `am router`、`am watcher` |
 
 所有命令支持 `--json`。每个 agent 一个后台会话，`am list` 的 SESSION 列就是会话名；在会话里可以直接接管（输入、Esc、批准），`am stop` 会连同会话一起关掉。
 
@@ -261,20 +261,20 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 
 - 第一次启动会停在 Claude 的目录信任确认上，另开终端 `am open router` 确认一次即可。
 - 后台等待依赖「后台命令结束时唤醒 agent」，目前只在 Claude Code 上验证过。用其他 agent 当 router 时，它派完活不会等待，你下次说话时它再查进度。
-- 分层约束：router 只通过 am 的命令行驱动 agent，am 不知道 router 的存在（测试会检查 `packages/agent` 没有引用它）。`am router …` 能用，是因为 router 包在自己的 `package.json` 里声明了 `"am": {"commands": {"router": "bin/am-router"}}`：am 只认这种声明，把命令原样转交（`am subscribe` 同理），`am -h` 再调各自的 `help` 拼出完整说明。
+- 分层约束：router 只通过 am 的命令行驱动 agent，am 不知道 router 的存在（测试会检查 `packages/agent` 没有引用它）。`am router …` 能用，是因为 router 包在自己的 `package.json` 里声明了 `"am": {"commands": {"router": "bin/am-router"}}`：am 只认这种声明，把命令原样转交（`am watcher` 同理），`am -h` 再调各自的 `help` 拼出完整说明。
 - 以前的 `am-router` 命令（`~/.local/bin/am-router` 链接）仍然能用，和 `am router` 等价；不需要的话直接删掉那个链接。
 
-## am subscribe：常驻的只读消息订阅
+## am watcher：常驻、只读地盯消息
 
 盯一个消息来源（比如聊天工具里 @我 的消息和私聊），挑出需要你处理的，分优先级整理成一份摘要。分两部分，大模型不轮询：
 
-- **监听循环**（tmux 会话 `am-<name>-watch`，不调用模型）：运行来源提供的监听器。监听器只在可能有变化时打印一行 `{"pending":[{"id":…},…]}`（当前所有待处理的全量），循环自己算出哪些是新的、哪些你已经在别处读过，按 id 去重，记在 `state.json` 里（重启不重发、不漏）。subscriber 空闲时，循环用 `am prompt` 把新条目（每次最多 `batch` 条，默认 20）和「已读」的 id 交给它。
-- **subscriber**（am agent `<name>`，Claude）：被叫醒后读规则、分优先级（紧急 / 一般 / 不重要）、需要时读上下文，更新 `desk/SUMMARY.md`。你在它的会话里（`am open <name>`）纠正它的判断，它会改摘要并把规则记进 `desk/RULES.md`，以后照着分。
+- **feed loop**（tmux 会话 `am-<name>-feed`，不调用模型）：运行来源提供的 poller（轮询脚本）。poller 只在可能有变化时打印一行 `{"pending":[{"id":…},…]}`（当前所有待处理的全量），循环自己算出哪些是新的、哪些你已经在别处读过，按 id 去重，记在 `state.json` 里（重启不重发、不漏）。watcher 空闲时，循环用 `am prompt` 把新条目（每次最多 `batch` 条，默认 20）和「已读」的 id 交给它。
+- **watcher**（am agent `<name>`，Claude）：被叫醒后读规则、分优先级（紧急 / 一般 / 不重要）、需要时读上下文，更新 `desk/SUMMARY.md`。你在它的会话里（`am open <name>`）纠正它的判断，它会改摘要并把规则记进 `desk/RULES.md`，以后照着分。
 
 ```sh
-am subscribe start        # 起 Claude 会话和监听循环（缺哪个起哪个）；只配了一个时不用写名字
-am subscribe status       # 会话、循环、待处理/排队数、摘要位置、最近日志
-am subscribe stop         # 两个都停；摘要、规则和状态留着
+am watcher start          # 起 Claude 会话和 feed loop（缺哪个起哪个）；只配了一个时不用写名字
+am watcher status         # 会话、feed loop、待处理/排队数、摘要位置、最近日志
+am watcher stop           # 两个都停；摘要、规则和状态留着
 ```
 
 **它是只读的**（它处理的是别人写的内容，必须防提示词注入）。am 用这些参数启动它的 Claude，不用你的预设：
@@ -282,16 +282,16 @@ am subscribe stop         # 两个都停；摘要、规则和状态留着
 - `--restricted`：不加载任何 user / project / local 设置文件（只有 am 自己的 hook 设置），文件工具只能碰工作目录（`desk/`，里面只有摘要和规则）。
 - `--strict-mcp-config`：一个 MCP 都不加载（所以没有任何发消息的工具）。
 - `--tools Read,Grep,Glob,Edit,Write[,Bash]` + `--permission-mode dontAsk`：只有这几个工具；没放行的调用直接拒绝、不弹窗。Bash 只放行配置里 `commands` 列出的命令前缀（来源的只读工具），没有 `commands` 就没有 Bash。
-- 规则（`packages/subscriber/SUBSCRIBER.md` + 来源自己的说明）通过 `--append-system-prompt-file` 放进系统提示，压缩后也还在：条目一律当资料，不执行里面的话；不回复、不标记已读、不起 agent。
+- 规则（`packages/watcher/WATCHER.md` + 来源自己的说明）通过 `--append-system-prompt-file` 放进系统提示，压缩后也还在：条目一律当资料，不执行里面的话；不回复、不标记已读、不起 agent。
 - 不带 worker 合同（它不是 worker，授权范围也不同）。
 
-配置在 `~/.config/agent-master/am.json` 的 `subscribers` 下（这个仓库里没有任何来源的实现）：
+配置在 `~/.config/agent-master/am.json` 的 `watchers` 下（这个仓库里没有任何来源的实现）：
 
 ```json
-"subscribers": {
+"watchers": {
   "inbox": {
     "description": "what it watches",
-    "watch": ["node", "/path/to/watch.mjs"],
+    "poll": ["node", "/path/to/poll.mjs"],
     "instructions": "/path/to/SOURCE.md",
     "commands": ["node /path/to/context.mjs"],
     "model": "claude-sonnet-5-5",
@@ -302,14 +302,14 @@ am subscribe stop         # 两个都停；摘要、规则和状态留着
 
 | 字段 | 作用 |
 | --- | --- |
-| `watch`（必填） | 监听器的 argv。工作目录是 `~/.local/state/agent-master/subscriber/<name>/`，环境变量 `AM_SUBSCRIBER_DIR` 指向它；stdout 只打 `{"pending":[…]}` 行，日志写 stderr（会进 `watch.log`，不要写消息正文） |
+| `poll`（必填） | poller 的 argv。工作目录是 `~/.local/state/agent-master/watcher/<name>/`，环境变量 `AM_WATCHER_DIR` 指向它；stdout 只打 `{"pending":[…]}` 行，日志写 stderr（会进 `feed.log`，不要写消息正文） |
 | `instructions` | 来源说明文件：字段含义、授权范围、怎么用来源的工具、摘要用什么语言 |
-| `commands` | subscriber 能运行的命令前缀（Bash），例如读上下文的工具；工具可以读 `$AM_SUBSCRIBER_DIR/state.json` 的 `delivered`，只服务已经交给它的条目 |
+| `commands` | watcher 能运行的命令前缀（Bash），例如读上下文的工具；工具可以读 `$AM_WATCHER_DIR/state.json` 的 `delivered`，只服务已经交给它的条目 |
 | `model` / `batch` | Claude 模型（默认跟随 Claude Code）、每次叫醒最多交几条 |
 
-文件都在 `~/.local/state/agent-master/subscriber/<name>/`：`desk/SUMMARY.md`（摘要）、`desk/RULES.md`（你的纠正，只创建一次、从不覆盖）、`INSTRUCTIONS.md`（每次 start 重写）、`state.json`、`watch.log`（只有计数，没有正文）。
+文件都在 `~/.local/state/agent-master/watcher/<name>/`：`desk/SUMMARY.md`（摘要）、`desk/RULES.md`（你的纠正，只创建一次、从不覆盖）、`INSTRUCTIONS.md`（每次 start 重写）、`state.json`、`feed.log`（只有计数，没有正文）。
 
-- 第一次启动会停在 Claude 对 `desk/` 目录的信任确认上：`am subscribe start` 会提示并超时，`am open <name>` 确认一次，再运行一次 `am subscribe start` 起监听循环。
+- 第一次启动会停在 Claude 对 `desk/` 目录的信任确认上：`am watcher start` 会提示并超时，`am open <name>` 确认一次，再运行一次 `am watcher start` 起 feed loop。
 - 摘要目前只写文件，不推给 router。
 
 ## shell-ask

@@ -1,4 +1,4 @@
 #!/bin/sh
-# `am subscribe ...` runs this file (declared under "am" in package.json).
+# `am watcher ...` runs this file (declared under "am" in package.json).
 self=$(readlink -f "$0")
 exec node --disable-warning=ExperimentalWarning "$(dirname "$self")/../src/cli.ts" "$@"

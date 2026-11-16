@@ -1,5 +1,5 @@
 {
-  "name": "@agent-master/subscriber",
+  "name": "@agent-master/watcher",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
@@ -10,7 +10,7 @@
   },
   "am": {
     "commands": {
-      "subscribe": "bin/am-subscribe"
+      "watcher": "bin/am-watcher"
     }
   }
 }

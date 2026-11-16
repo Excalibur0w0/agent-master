@@ -1,19 +1,19 @@
-// What the watcher reported, what the subscriber has been told, and what it is
+// What the poller reported, what the watcher has been told, and what it is
 // still owed. Kept in state.json so a restart neither repeats nor drops items.
 import { readFile, rename, writeFile } from "node:fs/promises";
 
-/** One thing needing the user's attention, as the watcher reports it; only `id` is required. */
+/** One thing needing the user's attention, as the poller reports it; only `id` is required. */
 export interface Item {
   id: string;
   [field: string]: unknown;
 }
 
 export interface FeedState {
-  /** Ids in the watcher's latest snapshot. */
+  /** Ids in the poller's latest snapshot. */
   pending: string[];
-  /** Items the subscriber has received; `gone` once the user read them elsewhere. A source's tools may check ids against this. */
+  /** Items the watcher has received; `gone` once the user read them elsewhere. A source's tools may check ids against this. */
   delivered: Record<string, { at: number; gone?: number }>;
-  /** Still owed to the subscriber. */
+  /** Still owed to the watcher. */
   queue: { items: Item[]; gone: string[] };
 }
 
@@ -38,7 +38,7 @@ export async function saveState(path: string, state: FeedState): Promise<void> {
 
 /**
  * Applies a snapshot of everything pending now: new ids are queued, ids that
- * dropped out (the user read them) are reported if the subscriber had them,
+ * dropped out (the user read them) are reported if the watcher had them,
  * and silently dropped if it never did.
  */
 export function applySnapshot(state: FeedState, items: Array<Record<string, unknown>>, now = Date.now()): { added: number; gone: number } {
@@ -89,7 +89,7 @@ const quote = (item: Item) => JSON.stringify(item).replace(/</g, "\\u003c");
 
 export function batchPrompt(name: string, batch: { items: Item[]; gone: string[] }, left: number): string {
   const lines = [
-    `[am subscribe] ${name}: ${batch.items.length} new item(s)${batch.gone.length ? `, ${batch.gone.length} read elsewhere` : ""}${left ? `, ${left} more to come` : ""}.`,
+    `[am watcher] ${name}: ${batch.items.length} new item(s)${batch.gone.length ? `, ${batch.gone.length} read elsewhere` : ""}${left ? `, ${left} more to come` : ""}.`,
   ];
   if (batch.items.length) {
     lines.push(

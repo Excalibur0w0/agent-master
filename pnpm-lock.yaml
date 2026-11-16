@@ -26,6 +26,8 @@ importers:
         specifier: ^1.9.0
         version: 1.9.0
 
+  packages/ledger: {}
+
   packages/router: {}
 
   packages/shell-ask:

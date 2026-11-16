@@ -1,0 +1,16 @@
+{
+  "name": "@agent-master/ledger",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "The router's ledger of work in flight, and the messages watchers put up for review, in SQLite; built on the am CLI.",
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.ts\""
+  },
+  "am": {
+    "commands": {
+      "ledger": "bin/am-ledger"
+    }
+  }
+}

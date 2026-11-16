@@ -3,8 +3,10 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { after, before, test } from "node:test";
 
 import { Tmux } from "@agent-master/tmux";
@@ -248,4 +250,22 @@ test("saved agents tell a stop, an exit and a lost tmux server apart", () => {
   assert.equal(savedStatus(agent, [], "/tmp/s:7:900"), "lost", "a new tmux server: the machine or tmux restarted");
   assert.equal(savedStatus(agent, [], undefined), "lost");
   assert.equal(savedStatus({ ...agent, exitedAt: 1 }, [], undefined), "exited", "an exit seen before the restart stays an exit");
+});
+
+test("am start --conversation continues an existing conversation instead of starting a new one", async () => {
+  const fake = await fakeClaude();
+  const argsFile = join(dir, "conversation-args.txt");
+  const am = resolve(import.meta.dirname, "../bin/am");
+  const socket = await tmux.socketPath();
+  const { stdout } = await promisify(execFile)(
+    am,
+    ["start", "conv1", "--kind", "claude", "--bin", fake, "--cwd", dir, "--conversation", "sess-7", "--timeout", "10000",
+      "--env", `AM_FAKE_ARGS=${argsFile}`, "--env", `AM_FAKE_INPUT=${join(dir, "conversation-input.txt")}`, "--env", "AM_FAKE_SESSION=sess-7", "--", "--permission-mode", "plan"],
+    { env: { ...process.env, TMUX: `${socket},0,0` } },
+  );
+  assert.match(stdout, /^conv1 is ready \(claude, on conversation sess-7, tmux session am-conv1/);
+  const argv = (await readFile(argsFile, "utf8")).trim().split("\n");
+  assert.deepEqual(argv.slice(argv.indexOf("--resume")), ["--resume", "sess-7", "--permission-mode", "plan"]);
+  assert.equal((await readSaved("conv1"))?.session, "sess-7");
+  await stopAgent(tmux, "conv1");
 });

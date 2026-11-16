@@ -36,7 +36,7 @@ import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
 const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode / dsh) in tmux
 
   am start <name> (--kind <claude|codex|opencode|dsh> | --profile P) [--bin PATH] [--cwd DIR] [--model M]
-           [--env K=V]... [--contract FILE] [--window] [--timeout MS] [-- <native agent args>]
+           [--env K=V]... [--contract FILE] [--conversation ID] [--window] [--timeout MS] [-- <native agent args>]
                                         Runs in its own tmux session am-<name>; --window uses a new window of the current session
                                         --profile takes kind, bin, model, env and args from a profile in your am.json;
                                         options given here win, and args given here follow the profile's
@@ -44,6 +44,8 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
                                         such as a gateway's launcher for codex or claude)
                                         --contract (default: the profile's, else $AM_CONTRACT) is appended to the
                                         prompts am sends it: in full the first time, then as a one-line reminder
+                                        --conversation continues that existing conversation of the agent instead of
+                                        starting a new one (claude, codex, opencode; not dsh)
   am profiles                           The profiles in your am.json
   am list [--saved]                     All agents and their states; --saved: every agent am remembers, running or not
   am open <name>                        Switch to its tmux session (outside tmux, print the attach command)
@@ -131,6 +133,7 @@ async function main(argv: string[]): Promise<number> {
       until: { type: "string" },
       profile: { type: "string" },
       contract: { type: "string" },
+      conversation: { type: "string" },
       saved: { type: "boolean" },
       all: { type: "boolean" },
       always: { type: "boolean" },
@@ -149,7 +152,7 @@ async function main(argv: string[]): Promise<number> {
   const warn = (message: string) => process.stderr.write(`am: warning: ${message}\n`);
   const note = (message: string) => process.stderr.write(`am: ${message}\n`);
   const ready = (agent: AgentView) =>
-    out(agent, `${agent.name} is ready (${agent.profile ? `profile ${agent.profile}, ` : ""}${agent.kind}, tmux session ${agent.tmuxSession}; watch it with: am open ${agent.name})`);
+    out(agent, `${agent.name} is ready (${agent.profile ? `profile ${agent.profile}, ` : ""}${agent.kind}${values.conversation ? `, on conversation ${values.conversation}` : ""}, tmux session ${agent.tmuxSession}; watch it with: am open ${agent.name})`);
 
   switch (command) {
     case "start": {
@@ -176,7 +179,7 @@ async function main(argv: string[]): Promise<number> {
         placement,
         timeoutMs,
       });
-      ready(await startAgent(tmux, { ...options, warn, note }));
+      ready(await startAgent(tmux, { ...options, resume: values.conversation || undefined, warn, note }));
       return 0;
     }
     case "profiles": {

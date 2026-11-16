@@ -12,10 +12,13 @@ const USAGE = `am-router — a long-running agent session that hands your reques
                      Start the router (default name: router) in tmux session am-<name>; talk to it with: am open <name>
                      --kind: the router's own agent (default claude); --worker-kind: its workers' default (default claude)
                      --project: where workers run unless you name another directory (default: the current directory)
+                     A claude router starts with --dangerously-skip-permissions unless you pass a permission mode after --
   am-router install | am-router uninstall
                      Link am-router into ~/.local/bin; it drives agents with am, which must be installed too (am install)
 
   Everything else goes through am: am list, am open <name>, am stop <name>, ...`;
+
+const SKIP_PERMISSIONS = "--dangerously-skip-permissions";
 
 class UsageError extends Error {}
 
@@ -49,6 +52,12 @@ async function start(args: string[]): Promise<number> {
   if (extra !== undefined) throw new UsageError(`unexpected argument: ${extra} (native agent arguments go after --)`);
   const native = positional((index) => index > end);
 
+  // A Claude router runs without permission prompts unless its own arguments choose a mode.
+  // It takes the flag: Claude Code ignores a bypass default written in project settings.
+  const kind = values.kind ?? "claude";
+  const choosesMode = native.some((arg) => arg === SKIP_PERMISSIONS || arg.startsWith("--permission-mode"));
+  const agentArgs = kind === "claude" && !choosesMode ? [SKIP_PERMISSIONS, ...native] : native;
+
   const project = resolve(values.project ?? process.cwd());
   if (!(await stat(project).then((s) => s.isDirectory(), () => false))) throw new UsageError(`--project is not a directory: ${project}`);
 
@@ -62,9 +71,9 @@ async function start(args: string[]): Promise<number> {
   const home = routerHome(name);
   await writeHome(home, { project, workerKind: values["worker-kind"] ?? "claude" });
   const started = am([
-    "start", name, "--kind", values.kind ?? "claude", "--cwd", home,
+    "start", name, "--kind", kind, "--cwd", home,
     ...(values.model ? ["--model", values.model] : []),
-    ...(native.length ? ["--", ...native] : []),
+    ...(agentArgs.length ? ["--", ...agentArgs] : []),
   ]);
   if (started.status !== 0) return started.status ?? 1;
   process.stdout.write(`${name} routes your requests to workers in ${project} unless you name another directory; talk to it with: am open ${name}\n`);

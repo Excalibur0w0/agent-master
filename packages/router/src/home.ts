@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const GUIDE = fileURLToPath(new URL("../ROUTER.md", import.meta.url));
 
-/** The am commands a router runs without asking; approve, deny, keys and open still ask the user. */
+/** The am commands a router with permission prompts on runs without asking; approve, deny, keys and open still ask the user. */
 const ALLOWED = ["list", "status", "start", "prompt", "wait", "read", "interrupt", "stop"];
 
 export interface RouterOptions {

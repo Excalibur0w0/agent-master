@@ -42,7 +42,7 @@ test("start writes the router's home and starts it there through am", async () =
   const { dir, run, calls, home } = await setup();
   const { code, stdout } = await run(["start"]);
   assert.equal(code, 0);
-  assert.deepEqual(await calls(), ["status router --json", `start router --kind claude --cwd ${home("router")}`]);
+  assert.deepEqual(await calls(), ["status router --json", `start router --kind claude --cwd ${home("router")} -- --dangerously-skip-permissions`]);
   const instructions = await readFile(join(home("router"), "AGENTS.md"), "utf8");
   assert.match(instructions, new RegExp(`Default project: \`${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\``));
   assert.match(stdout, /talk to it with: am open router/);
@@ -54,6 +54,17 @@ test("start passes the name, kind, model and the agent's own arguments on", asyn
   assert.equal(code, 0);
   assert.equal((await calls())[1], `start ops --kind codex --cwd ${home("ops")} --model gpt-x -- --foo bar`);
   assert.match(await readFile(join(home("ops"), "CLAUDE.md"), "utf8"), /Default worker kind: `dsh`/);
+});
+
+test("a Claude router skips permission prompts unless its own arguments choose a mode", async () => {
+  const { run, calls, home } = await setup();
+  assert.equal((await run(["start", "a", "--", "--resume", "x"])).code, 0);
+  assert.equal((await run(["start", "b", "--", "--permission-mode", "plan"])).code, 0);
+  const starts = (await calls()).filter((call) => call.startsWith("start "));
+  assert.deepEqual(starts, [
+    `start a --kind claude --cwd ${home("a")} -- --dangerously-skip-permissions --resume x`,
+    `start b --kind claude --cwd ${home("b")} -- --permission-mode plan`,
+  ]);
 });
 
 test("start leaves a running router alone", async () => {

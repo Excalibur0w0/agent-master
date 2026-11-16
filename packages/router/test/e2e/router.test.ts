@@ -85,7 +85,7 @@ test("a router hands a request to a worker, waits in the background and reports 
   };
   const watcher = setInterval(watch, 1000);
   try {
-    const request = "请让一个 worker（am start 时加参数 --model haiku）回答：「17 乘以 23 等于多少？只回复数字」。拿到结果后只回复那个数字。";
+    const request = "请让一个 worker（am start 时加参数 --model haiku）回答：「17 乘以 23 等于多少？只回复数字」。拿到结果后告诉我那个数字。";
     const first = await am("prompt", "router", request, "--wait", "--timeout", "300000");
     assert.equal(first.state, "idle", `router ended its turn ${first.state}: ${first.detail}`);
 
@@ -99,6 +99,7 @@ test("a router hands a request to a worker, waits in the background and reports 
       if (current.state === "idle") ({ reply } = await am("read", "router"));
     }
     if (!/391/.test(reply)) assert.fail(`router reply: ${reply}\n${await scene()}`);
+    assert.match(reply, /^Q: \S/, "the report names the request it answers");
   } finally {
     clearInterval(watcher);
   }

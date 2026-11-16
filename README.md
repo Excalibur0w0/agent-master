@@ -150,7 +150,7 @@ hook（dsh 是插件）把状态写在 agent 所在 pane 的 `@am_*` 选项上�
 
 ## am-router：常驻的派活会话
 
-建在 am 之上的一层，参考 DeepSeek Super-agent 的 router–worker 设计：起一个常驻的 agent 会话，你只跟它说话；它把每个请求原样交给一个 worker（用 am 启动），在后台等 worker 做完，再把结果或需要你决定的事告诉你。它自己不看代码、不拆任务，也不替你批准。
+建在 am 之上的一层，参考 DeepSeek Super-agent 的 router–worker 设计：起一个常驻的 agent 会话，你只跟它说话；它把每个请求原样交给一个 worker（用 am 启动），在后台等 worker 做完，再把结果或需要你决定的事告诉你，开头一行 `Q: 简短标题` 标明对应你的哪个请求。它自己不看代码、不拆任务，也不替你批准。
 
 ```sh
 cd ~/code/my-app
@@ -167,7 +167,7 @@ am stop router
 | `--worker-kind` | worker 默认用的 agent（默认 claude）；对话里也可以指定 |
 | `-- 原生参数` | 传给 router 自己的 agent |
 
-router 怎么知道自己的角色：`am-router start` 在 `~/.local/state/agent-master/router/<name>/` 写入内容相同的 `CLAUDE.md` 和 `AGENTS.md`（正文是 `packages/router/ROUTER.md`），再用 `am start <name> --cwd` 在这个目录启动。规则以项目说明文件的形式存在，各家 agent 都会加载，上下文压缩后也还在；目录里没有代码，它也就没有代码可看。同一目录下的 `.claude/settings.json` 放行它派活用的 am 子命令，`am approve`、`deny`、`keys`、`open` 仍然每次都问你。每次 start 都会重写这些文件，所以 router 还在运行时 start 会被拒绝。
+router 怎么知道自己的角色：`am-router start` 在 `~/.local/state/agent-master/router/<name>/` 写入内容相同的 `CLAUDE.md` 和 `AGENTS.md`（正文是 `packages/router/ROUTER.md`），再用 `am start <name> --cwd` 在这个目录启动。规则以项目说明文件的形式存在，各家 agent 都会加载，上下文压缩后也还在；目录里没有代码，它也就没有代码可看。同一目录下的 `.claude/settings.json` 放行它派活用的 am 子命令，`am approve`、`deny`、`keys`、`open` 仍然每次都问你。不过 Claude 的 router 默认带 `--dangerously-skip-permissions` 启动，不弹权限确认，这份放行清单只在你自己指定权限模式时起作用，例如 `am-router start -- --permission-mode default`。每次 start 都会重写这些文件，所以 router 还在运行时 start 会被拒绝。
 
 - 第一次启动会停在 Claude 的目录信任确认上，另开终端 `am open router` 确认一次即可。
 - 后台等待依赖「后台命令结束时唤醒 agent」，目前只在 Claude Code 上验证过。用其他 agent 当 router 时，它派完活不会等待，你下次说话时它再查进度。

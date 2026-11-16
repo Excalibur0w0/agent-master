@@ -81,7 +81,7 @@ export async function ledgerHasTasks(home: string): Promise<boolean> {
   return /^### \S/m.test(text.replace(/<!--[\s\S]*?-->/g, ""));
 }
 
-/** What `am-router start` was given, so `am-router restart` can start a fresh session the same way. */
+/** What `am router start` was given, so `am router restart` can start a fresh session the same way. */
 export interface SavedStart {
   kind: string;
   model?: string;

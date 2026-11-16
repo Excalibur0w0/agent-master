@@ -5,11 +5,10 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { ledgerHasTasks, loadStart, routerHome, saveStart, writeHome, type SavedStart } from "./home.ts";
-import { installGlobal, uninstallGlobal } from "./install.ts";
 
-const USAGE = `am-router — a long-running agent session that hands your requests to other coding agents through am
+const USAGE = `am router — a long-running agent session that hands your requests to other coding agents through am
 
-  am-router start [name] [--kind K] [--model M] [--project DIR] [--worker-kind K] [--contract FILE] [-- <native agent args>]
+  am router start [name] [--kind K] [--model M] [--project DIR] [--worker-kind K] [--contract FILE] [-- <native agent args>]
                      Start the router (default name: router) in tmux session am-<name>; talk to it with: am open <name>
                      --kind: the router's own agent (default claude); --worker-kind: its workers' default (default claude)
                      --project: where workers run unless you name another directory (default: the current directory)
@@ -17,13 +16,13 @@ const USAGE = `am-router — a long-running agent session that hands your reques
                      (default: ${defaultContract()}, when it exists)
                      A claude router starts with --dangerously-skip-permissions unless you pass a permission mode after --
                      When its LEDGER.md lists tasks, a new router is first asked to take them over
-  am-router restart [name]
+  am router restart [name]
                      Replace a router with a fresh session started the same way; the new one picks up from LEDGER.md.
                      Run it from your own terminal, not from inside the router
-  am-router install | am-router uninstall
-                     Link am-router into ~/.local/bin; it drives agents with am, which must be installed too (am install)
+  am router stop [name]
+                     Stop the router; its LEDGER.md stays for the next start
 
-  Everything else goes through am: am list, am open <name>, am stop <name>, ...`;
+  Everything else goes through am: am list, am open <name>, ...`;
 
 const SKIP_PERMISSIONS = "--dangerously-skip-permissions";
 const TAKE_OVER = "Take over from LEDGER.md.";
@@ -89,7 +88,7 @@ async function launch(name: string, options: SavedStart): Promise<number> {
   if (!options.contract) process.stdout.write(`note: no worker contract (${defaultContract()} does not exist); workers get only the user's words\n`);
   if (await ledgerHasTasks(home)) {
     const kickoff = am(["prompt", name, "-"], true, TAKE_OVER);
-    if (kickoff.status !== 0) process.stderr.write(`am-router: could not ask ${name} to take over its ledger: ${kickoff.stderr.trim()}\n`);
+    if (kickoff.status !== 0) process.stderr.write(`am router: could not ask ${name} to take over its ledger: ${kickoff.stderr.trim()}\n`);
     else process.stdout.write(`${name} is taking over the tasks in ${join(home, "LEDGER.md")}\n`);
   }
   process.stdout.write(`${name} routes your requests to workers in ${options.project} unless you name another directory; talk to it with: am open ${name}\n`);
@@ -130,7 +129,7 @@ async function start(args: string[]): Promise<number> {
 
   // Its instructions are rewritten on every start, so never under a router that is still running.
   const state = running(name);
-  if (state) throw new Error(`${name} is already running (${state}); talk to it with: am open ${name}, or replace it with a fresh session: am-router restart ${name}`);
+  if (state) throw new Error(`${name} is already running (${state}); talk to it with: am open ${name}, or replace it with a fresh session: am router restart ${name}`);
 
   return launch(name, { kind: values.kind ?? "claude", model: values.model, project, workerKind: values["worker-kind"] ?? "claude", contract, args: native });
 }
@@ -140,12 +139,20 @@ async function restart(args: string[]): Promise<number> {
   const [name = "router", extra] = positionals;
   if (extra !== undefined) throw new UsageError(`unexpected argument: ${extra}`);
   const saved = await loadStart(routerHome(name));
-  if (!saved) throw new UsageError(`no saved start options for ${name}; start it with am-router start`);
+  if (!saved) throw new UsageError(`no saved start options for ${name}; start it with am router start`);
   if (running(name)) {
     const stopped = am(["stop", name]);
     if (stopped.status !== 0) return stopped.status ?? 1;
   }
   return launch(name, saved);
+}
+
+async function stop(args: string[]): Promise<number> {
+  const { positionals } = parseArgs({ args, allowPositionals: true, options: {} });
+  const [name = "router", extra] = positionals;
+  if (extra !== undefined) throw new UsageError(`unexpected argument: ${extra}`);
+  if (!running(name)) throw new Error(`${name} is not running`);
+  return am(["stop", name]).status ?? 1;
 }
 
 async function main([command, ...rest]: string[]): Promise<number> {
@@ -154,12 +161,11 @@ async function main([command, ...rest]: string[]): Promise<number> {
       return start(rest);
     case "restart":
       return restart(rest);
-    case "install":
-    case "uninstall":
-      for (const line of await (command === "install" ? installGlobal() : uninstallGlobal())) process.stdout.write(`${line}\n`);
-      return 0;
+    case "stop":
+      return stop(rest);
     case undefined:
     case "help":
+    case "-h":
     case "--help":
       process.stdout.write(`${USAGE}\n`);
       return 0;
@@ -172,7 +178,7 @@ main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (error: unknown) => {
     const usage = error instanceof UsageError || String((error as NodeJS.ErrnoException)?.code).startsWith("ERR_PARSE_ARGS");
-    process.stderr.write(`am-router: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`am router: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(usage ? 2 : 1);
   },
 );

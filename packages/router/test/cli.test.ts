@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 
 const bin = resolve(import.meta.dirname, "../bin/am-router");
 
@@ -108,6 +109,28 @@ test("restart starts a fresh session the way the router was first started", asyn
   assert.equal(starts[0], `start ops --kind claude --cwd ${home("ops")} --model haiku -- --dangerously-skip-permissions --resume old --effort low`);
   assert.equal(starts[1], `start ops --kind claude --cwd ${home("ops")} --model haiku -- --dangerously-skip-permissions --effort low`, "a fresh session: no --resume");
   assert.match(await readFile(join(home("ops"), "AGENTS.md"), "utf8"), /Default worker kind: `codex`/);
+});
+
+test("stop closes a running router through am and leaves its ledger", async () => {
+  const { run, calls, home } = await setup();
+  assert.equal((await run(["start"])).code, 0);
+  assert.equal((await run(["stop"], { AM_STATE: "idle" })).code, 0);
+  assert.deepEqual((await calls()).slice(-2), ["status router --json", "stop router"]);
+  assert.match(await readFile(join(home("router"), "LEDGER.md"), "utf8"), /## In progress/);
+  const idle = await run(["stop", "ops"]);
+  assert.equal(idle.code, 1);
+  assert.match(idle.stderr, /ops is not running/);
+});
+
+test("am router ... reaches the router, and am -h documents it with every other command", async () => {
+  const am = resolve(import.meta.dirname, "../../agent/bin/am");
+  const help = await promisify(execFile)(am, ["-h"]);
+  for (const line of ["am start <name>", "am router start [name]", "am router restart [name]", "am router stop [name]", "am subscribe start [name]", "am subscribe stop [name]"]) {
+    assert.ok(help.stdout.includes(line), line);
+  }
+  const routerHelp = await promisify(execFile)(am, ["router", "help"]);
+  assert.match(routerHelp.stdout, /^am router — /);
+  await assert.rejects(promisify(execFile)(am, ["router", "nope"]), (error: any) => error.code === 2 && /unknown command: nope/.test(error.stderr));
 });
 
 test("start leaves a running router alone", async () => {

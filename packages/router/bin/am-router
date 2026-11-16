@@ -1,4 +1,5 @@
 #!/bin/sh
-# Resolve symlinks (am-router install links this file into ~/.local/bin).
+# `am router ...` runs this file (declared under "am" in package.json); it also works on its own.
+# Resolve symlinks: an older install linked it into ~/.local/bin.
 self=$(readlink -f "$0")
 exec node --disable-warning=ExperimentalWarning "$(dirname "$self")/../src/cli.ts" "$@"

@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { Tmux } from "@agent-master/tmux";
@@ -26,6 +28,7 @@ import {
   type SavedView,
 } from "./agent.ts";
 import { config, configPath } from "./config.ts";
+import { BUILTIN, extensions } from "./extensions.ts";
 import { AmError } from "./drivers/index.ts";
 import { installGlobal, installProject, uninstallGlobal } from "./install.ts";
 import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
@@ -62,10 +65,22 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
   am install [--project DIR] | am uninstall
                                         Install the am command and the explicit entry points (/am, $am); --project for one project only
 
+  am help | am -h                       This text, including the commands below that other packages add to am
+
   <name> can also be a pane id (e.g. %12). Every command accepts --json.
   States: starting / idle / working / blocked / stalled / exited / unknown
   stalled: its turn will not finish without you: usage limit, content filter, an API error, or no output for
   stallAfterMinutes (default 15). Settings and profiles: ${configPath()}`;
+
+/** am's own usage, then each extension's (`<executable> help`). */
+function fullUsage(): string {
+  const sections = [USAGE];
+  for (const [command, bin] of extensions()) {
+    const help = spawnSync(bin, ["help"], { encoding: "utf8", timeout: 15_000 });
+    sections.push(help.status === 0 && help.stdout.trim() ? help.stdout.trimEnd() : `am ${command}: no usage available (${bin} help failed)`);
+  }
+  return sections.join("\n\n");
+}
 
 function age(startedAt: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
@@ -94,6 +109,13 @@ function savedTable(agents: SavedView[]): string {
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  const extension = command && !BUILTIN.has(command) ? extensions().get(command) : undefined;
+  if (extension) {
+    // Extensions drive agents through am's command line: point them at this am.
+    const run = spawnSync(extension, rest, { stdio: "inherit", env: { ...process.env, AM_BIN: process.env.AM_BIN ?? fileURLToPath(new URL("../bin/am", import.meta.url)) } });
+    if (run.error) throw run.error;
+    return run.status ?? 1;
+  }
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
@@ -252,8 +274,9 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     case undefined:
     case "help":
+    case "-h":
     case "--help":
-      process.stdout.write(`${USAGE}\n`);
+      process.stdout.write(`${fullUsage()}\n`);
       return 0;
     default:
       throw new AmError("usage", `unknown command: ${command}\n\n${USAGE}`);

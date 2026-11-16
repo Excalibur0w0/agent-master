@@ -1,20 +1,21 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { loadState } from "./feed.ts";
-import { agentArgs, configPath, deskDir, loadWatchers, logFile, pick, rulesFile, stateFile, watcherDir, summaryFile, UsageError, writeHome } from "./home.ts";
+import { agentArgs, configPath, deskDir, loadWatchers, logFile, pick, routerOf, rulesFile, stateFile, UsageError, watcherDir, writeHome } from "./home.ts";
 import { run, withoutContract } from "./run.ts";
 
-const USAGE = `am watcher — a long-running Claude session that watches a message source and keeps a summary of what needs you
+const USAGE = `am watcher — a long-running Claude session that watches a message source and puts what needs you up for
+review in the ledger (am ledger show, "For review"; am ledger inbox)
 
   am watcher start [name]  Start the watcher (default: the only one configured): its Claude session, am agent
                              <name>, read-only (no MCP servers, no settings files but am's, only its own files and the
                              source's commands), and its feed loop in tmux session am-<name>-feed. Starts whichever
                              of the two is not running
-  am watcher stop [name]   Stop both; its summary, rules and state stay for the next start
-  am watcher status [name] Its Claude session and feed loop, what is pending or queued, where the summary is
+  am watcher stop [name]   Stop both; its entries, rules and state stay for the next start
+  am watcher status [name] Its Claude session and feed loop, what is pending or queued, what is up for review
   am watcher list          The watchers configured in your am.json
   am watcher run <name>    The feed loop itself (what start runs in tmux): runs the source's poller, and wakes the
                              watcher through am prompt when it is idle and new items are queued
@@ -24,7 +25,8 @@ const USAGE = `am watcher — a long-running Claude session that watches a messa
                 "commands": ["node /path/context.js"], "description": "...", "model": "...", "batch": 20 }
   The poller prints one JSON line {"pending": [{"id": "...", ...}]} with everything pending whenever that may have
   changed; the loop works out what is new and what the user has read elsewhere.
-  Files: ~/.local/state/agent-master/watcher/<name>/desk/SUMMARY.md (the summary) and RULES.md (your corrections)`;
+  "router" (default: router) names whose ledger the entries go to.
+  Files: ~/.local/state/agent-master/watcher/<name>/desk/RULES.md (your corrections), feed.log, state.json`;
 
 const tmuxBin = process.env.AM_TMUX ?? "tmux";
 const tmux = (args: string[]) => spawnSync(tmuxBin, args, { encoding: "utf8" });
@@ -70,6 +72,9 @@ async function start(name: string | undefined): Promise<number> {
         ...(config.model ? ["--model", config.model] : []),
         // The source's commands find the feed state here (to stay within the items it was given).
         "--env", `AM_WATCHER_DIR=${watcherDir(chosen)}`,
+        // Its am ledger inbox commands record entries as this watcher, in this router's ledger.
+        "--env", `AM_WATCHER=${chosen}`,
+        "--env", `AM_ROUTER=${routerOf(config)}`,
         "--", ...agentArgs(chosen, config),
       ],
       false,
@@ -83,7 +88,7 @@ async function start(name: string | undefined): Promise<number> {
   process.stdout.write(
     [
       `${chosen} is running: Claude session am-${chosen} (am open ${chosen}), feed loop ${feedSession(chosen)}`,
-      `summary: ${summaryFile(chosen)}`,
+      `what needs you: am ledger show (For review) or am ledger inbox list --router ${routerOf(config)}`,
       `your corrections: ${rulesFile(chosen)}`,
     ].join("\n") + "\n",
   );
@@ -102,22 +107,21 @@ async function stop(name: string | undefined): Promise<number> {
     if (result.status !== 0) return result.status ?? 1;
     stopped = true;
   }
-  process.stdout.write(stopped ? `stopped ${chosen}; its summary stays at ${summaryFile(chosen)}\n` : `${chosen} is not running\n`);
+  process.stdout.write(stopped ? `stopped ${chosen}; its entries stay in the ledger (am ledger inbox list)\n` : `${chosen} is not running\n`);
   return 0;
 }
 
 async function status(name: string | undefined): Promise<number> {
-  const [chosen] = pick(await loadWatchers(), name);
+  const [chosen, config] = pick(await loadWatchers(), name);
   const agent = agentState(chosen);
   const state = await loadState(stateFile(chosen));
   const delivered = Object.values(state.delivered).filter((d) => !d.gone).length;
-  const updated = (path: string) => {
-    try {
-      return statSync(path).mtime.toLocaleString();
-    } catch {
-      return "not created yet";
-    }
-  };
+  const entries = am(["ledger", "inbox", "list", "--router", routerOf(config), "--json"]);
+  let review = "unknown (am ledger failed)";
+  try {
+    const mine = (JSON.parse(entries.stdout) as Array<{ watcher: string; priority: string }>).filter((e) => e.watcher === chosen);
+    review = `${mine.length} entr${mine.length === 1 ? "y" : "ies"} (${["urgent", "normal", "low"].map((p) => `${mine.filter((e) => e.priority === p).length} ${p}`).join(", ")})`;
+  } catch {}
   let tail: string[] = [];
   try {
     tail = readFileSync(logFile(chosen), "utf8").trimEnd().split("\n").slice(-5);
@@ -127,8 +131,8 @@ async function status(name: string | undefined): Promise<number> {
   process.stdout.write(
     [
       `${chosen}: Claude session ${agent ? `${agent.state}${agent.detail ? ` (${agent.detail})` : ""}` : "not running"}; feed loop ${feeding(chosen) ? "running" : "not running"}`,
-      `feed: ${state.pending.length} pending, ${delivered} given to the watcher, ${state.queue.items.length} new and ${state.queue.gone.length} read-elsewhere waiting for it`,
-      `summary: ${summaryFile(chosen)} (updated ${updated(summaryFile(chosen))})`,
+      `feed: ${state.pending.length} pending, ${delivered} given to the watcher, ${state.queue.items.length} new waiting for it`,
+      `up for review in ${routerOf(config)}'s ledger: ${review}; see am ledger show`,
       `rules: ${rulesFile(chosen)}`,
       ...(tail.length ? ["log:", ...tail.map((line) => `  ${line}`)] : []),
     ].join("\n") + "\n",

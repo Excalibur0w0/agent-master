@@ -5,8 +5,8 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-import { applySnapshot, batchPrompt, loadState, markDelivered, nextBatch, saveState, type FeedState } from "./feed.ts";
-import { logFile, stateFile, watcherDir, type WatcherConfig } from "./home.ts";
+import { applySnapshot, batchPrompt, loadState, markDelivered, markReported, nextBatch, saveState, type FeedState } from "./feed.ts";
+import { logFile, routerOf, stateFile, watcherDir, type WatcherConfig } from "./home.ts";
 
 export interface RunOptions {
   /** How often to check whether the watcher can take a batch. */
@@ -90,18 +90,30 @@ export async function run(name: string, config: WatcherConfig, options: RunOptio
   };
 
   const tick = async () => {
+    // Items the user read elsewhere: the ledger takes them off the review list. No model needed.
+    const gone = [...state.queue.gone];
+    if (gone.length) {
+      const told = am(["ledger", "inbox", "read", "--watcher", name, "--router", routerOf(config), ...gone.flatMap((id) => ["--item", id])]);
+      if (told.status === 0) {
+        markReported(state, gone);
+        await persist();
+        log(`told the ledger ${gone.length} item(s) were read elsewhere`);
+      } else {
+        log(`could not tell the ledger about read items: ${told.stderr.trim().slice(0, 300)}`);
+      }
+    }
     const batch = nextBatch(state, config.batch ?? 20);
     if (!batch) return;
     const status = am(["status", name, "--json"]);
     const agent = status.status === 0 ? JSON.parse(status.stdout) : undefined;
     const note = agent ? `${agent.state}` : "not running";
     if (agent?.state !== "idle") {
-      if (note !== lastAgentNote) log(`watcher ${name} is ${note}; ${state.queue.items.length + state.queue.gone.length} waiting`);
+      if (note !== lastAgentNote) log(`watcher ${name} is ${note}; ${state.queue.items.length} waiting`);
       lastAgentNote = note;
       return;
     }
     lastAgentNote = "idle";
-    const left = state.queue.items.length - batch.items.length;
+    const left = state.queue.items.length - batch.length;
     const sent = am(["prompt", name, "-"], batchPrompt(name, batch, left));
     if (sent.status !== 0) {
       log(`could not wake ${name}: ${sent.stderr.trim().slice(0, 300)}`);
@@ -109,7 +121,7 @@ export async function run(name: string, config: WatcherConfig, options: RunOptio
     }
     markDelivered(state, batch);
     await persist();
-    log(`woke ${name}: ${batch.items.length} new, ${batch.gone.length} read elsewhere${left ? `, ${left} still queued` : ""}`);
+    log(`woke ${name}: ${batch.length} new${left ? `, ${left} still queued` : ""}`);
   };
 
   log(`started; ${state.pending.length} pending and ${state.queue.items.length} queued from before`);

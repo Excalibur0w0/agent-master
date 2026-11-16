@@ -84,6 +84,9 @@ const SETUPS: Record<string, { args: string[]; env?: string[]; cwd?: string; per
 };
 
 before(async () => {
+  // What am remembers about test agents (for am resume) stays out of the user's own state; set before
+  // the tmux server starts, so agents' own am calls inherit it too.
+  process.env.AM_STATE_DIR = join(workDir, "am-state");
   await mkdir(workDir, { recursive: true });
   const lead = await tmux.newSession("lead", { width: 220, height: 60, cwd: workDir, command: "sh" });
   env = { ...process.env, TMUX: `${await tmux.socketPath()},0,0`, TMUX_PANE: lead };

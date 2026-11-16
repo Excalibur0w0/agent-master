@@ -3,9 +3,9 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 
-import { OpencodeApi } from "../opencode-api.ts";
+import { modelRef, OpencodeApi, type OpencodeError, type OpencodeTurn } from "../opencode-api.ts";
 import { writeRecord, type AgentRecord } from "../registry.ts";
-import { AmError, poll, sleep, type Driver, type LaunchPlan } from "./types.ts";
+import { AmError, classifyFailure, poll, sleep, stalledView, type Driver, type LaunchPlan, type StatusView } from "./types.ts";
 
 // The API answers before the TUI has subscribed to input; keystrokes sent in
 // that gap are dropped (and am never resends), so leave the TUI time to subscribe.
@@ -39,6 +39,29 @@ async function paneSession(client: OpencodeApi, record: AgentRecord): Promise<st
   return session;
 }
 
+/** Retries of a transient error before am calls the turn stalled; a quota error stalls at once. */
+const RETRIES_BEFORE_STALL = 3;
+
+function failureReason(error: OpencodeError) {
+  if (/quota|rate-limit/.test(error.type)) return "usage_limit" as const;
+  if (/content-filter/.test(error.type)) return "content_filter" as const;
+  return classifyFailure(error.message);
+}
+
+/** opencode 2: a turn retrying its way nowhere, or ended on an error. */
+export function opencodeStall(turn: OpencodeTurn | undefined, running: boolean): StatusView | undefined {
+  if (!turn) return undefined;
+  if (running && turn.retry && (turn.retry.attempt >= RETRIES_BEFORE_STALL || /quota/.test(turn.retry.error.type))) {
+    const { error, attempt } = turn.retry;
+    return stalledView(failureReason(error), `${error.message} (retry ${attempt})`, `${turn.id}:retry`);
+  }
+  // An interrupted turn also ends on an error; that is the user's doing, not a stall.
+  if (!running && turn.error && !/abort|interrupt|cancel/i.test(`${turn.error.type} ${turn.error.message}`)) {
+    return stalledView(failureReason(turn.error), turn.error.message, `${turn.id}:error`);
+  }
+  return undefined;
+}
+
 export const opencode: Driver = {
   kind: "opencode",
   // The server marks the session busy as soon as the TUI submits.
@@ -48,7 +71,7 @@ export const opencode: Driver = {
     return [];
   },
 
-  async launch({ model, args }): Promise<LaunchPlan> {
+  async launch({ model, args, resume }): Promise<LaunchPlan> {
     const port = await freePort();
     const password = randomBytes(18).toString("base64url");
     const version = execFileSync("opencode", ["--version"], { encoding: "utf8", timeout: 10_000 });
@@ -56,16 +79,17 @@ export const opencode: Driver = {
       const url = `http://127.0.0.1:${port}/api`;
       return {
         command: [process.execPath, fileURLToPath(new URL("../opencode-v2-runner.ts", import.meta.url)), url, model ?? "", ...args],
-        env: { OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_SERVER_PASSWORD: password, PATH: process.env.PATH ?? "" },
+        env: { OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_SERVER_PASSWORD: password, PATH: process.env.PATH ?? "", ...(resume ? { AM_OPENCODE_RESUME: resume } : {}) },
         fields: { url, auth: password },
       };
     }
+    if (model?.includes("#")) throw new AmError("unsupported", `model variants (${model}) need OpenCode 2; this is ${version.trim()}`);
     return {
-      command: ["opencode", "--port", String(port), ...(model ? ["-m", model] : []), ...args],
+      command: ["opencode", "--port", String(port), ...(model ? ["-m", model] : []), ...(resume ? ["--session", resume] : []), ...args],
       // The "Update Available" dialog pops up at a random moment after start and
       // takes keystrokes: an am prompt's Enter would confirm a self-update instead.
       env: { OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_SERVER_PASSWORD: password },
-      fields: { url: `http://127.0.0.1:${port}`, auth: password },
+      fields: { url: `http://127.0.0.1:${port}`, auth: password, ...(resume ? { session: resume } : {}) },
     };
   },
 
@@ -78,6 +102,18 @@ export const opencode: Driver = {
     }, deadline);
     if (!ready) throw new AmError("start_timeout", "opencode's server did not become ready in time");
     await sleep(TUI_SETTLE_MS);
+  },
+
+  async confirmLaunch(record, { model }) {
+    const wanted = model?.includes("#") ? modelRef(model) : undefined;
+    if (!wanted?.variant) return undefined;
+    // Read back from the session the TUI is bound to: that is what its next turn runs on.
+    const actual = (await api(record).sessionInfo(record.session)).model;
+    if (actual?.providerID !== wanted.providerID || actual?.id !== wanted.id || actual?.variant !== wanted.variant) {
+      const got = actual ? `${actual.providerID}/${actual.id}#${actual.variant ?? "default"}` : "no model";
+      throw new AmError("variant_unconfirmed", `${record.name}'s opencode session ${record.session} runs ${got}, not ${model}`);
+    }
+    return `${record.name} runs ${model}: confirmed on opencode session ${record.session}`;
   },
 
   async status(record) {
@@ -94,7 +130,13 @@ export const opencode: Driver = {
         return { state: "blocked", detail: [p.permission, ...(p.patterns ?? [])].join(" ") };
       }
       if (questions.length) return { state: "blocked", detail: "question" };
-      if (Object.values(status).some((s) => s.type !== "idle")) return { state: "working", detail: "" };
+      const running = Object.values(status).some((s) => s.type !== "idle");
+      if (client.v2 && record.session) {
+        const stall = opencodeStall(await client.latestTurn(), running);
+        if (stall) return stall;
+        if (running) return { state: "working", detail: "", activity: (await client.sessionInfo()).time?.updated };
+      }
+      if (running) return { state: "working", detail: "" };
       return { state: "idle", detail: "" };
     } catch (error) {
       return { state: "unknown", detail: error instanceof Error ? error.message : String(error) };

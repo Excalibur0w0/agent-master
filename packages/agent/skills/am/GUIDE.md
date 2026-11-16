@@ -26,9 +26,10 @@ am stop reviewer                               # when you no longer need it
 | Command | Purpose |
 | --- | --- |
 | `am start <name> --kind K [--cwd DIR] [--model M] [--bin EXE] [-- native args]` | Launch the agent in tmux session `am-<name>`. Default cwd is yours. `--bin` runs a wrapper that accepts the same arguments as `claude`/`codex` (e.g. a codex launched through a gateway); it must be a command on PATH or a path relative to `--cwd`, not a shell alias. |
-| `am prompt <name> <text\|-> [--wait] [--timeout MS]` | Submit a task (`-` reads stdin). `--wait` returns once it is `idle` or `blocked`. |
-| `am wait <name> [--until idle,blocked] [--timeout MS]` | Wait for a state. |
-| `am status <name>` / `am list` | Current state; `detail` explains `blocked` (e.g. the command awaiting approval). |
+| `am start <name> --profile P [--cwd DIR]` | Launch with one of the user's profiles (`am profiles` lists them); prefer it to hand-written flags. |
+| `am prompt <name> <text\|-> [--wait] [--timeout MS]` | Submit a task (`-` reads stdin). `--wait` returns once it is `idle`, `blocked` or `stalled`. |
+| `am wait <name> [--until idle,blocked,stalled] [--timeout MS]` | Wait for a state. |
+| `am status <name>` / `am list` | Current state; `detail` explains `blocked` (e.g. the command awaiting approval) and `stalled`. |
 | `am read <name>` | Final message of its latest turn. |
 | `am interrupt <name>` | Stop its current turn. |
 | `am approve <name>` / `am deny <name>` | Answer a pending permission request (see rules). |
@@ -37,16 +38,16 @@ am stop reviewer                               # when you no longer need it
 
 Add `--json` to any command for machine-readable output. Names match `[a-z][a-z0-9_-]{0,31}`; a pane id such as `%12` also works.
 
-States: `starting`, `idle` (ready for input), `working`, `blocked` (waiting for a human decision), `exited`, `unknown`.
+States: `starting`, `idle` (ready for input), `working`, `blocked` (waiting for a human decision), `stalled` (its turn will not finish without someone stepping in: a usage limit, a content filter, an API error, or no output for a long time), `exited`, `unknown`.
 
 ## Waiting without blocking
 
 A delegated task can take many minutes. If your tools can run a command in the background and wake you when it exits (Claude Code's Bash tool with `run_in_background` can; a shell `&` cannot), do not wait in the foreground:
 
 1. Send the task without `--wait`. `am prompt` still returns only once the agent has received it.
-2. Run `am wait <name>` in the background, without `--timeout`, one per agent. It ends when the agent is `idle`, `blocked` or `exited`, and prints which.
+2. Run `am wait <name>` in the background, without `--timeout`, one per agent. It ends when the agent is `idle`, `blocked`, `stalled` or `exited`, and prints which.
 3. Tell the user which agents are working, then go on with other work or end your turn. Do not poll `am status` meanwhile.
-4. When it wakes you: `idle` → `am read <name>`; `blocked` → follow the rules below, and once it is answered, run another background `am wait`; `exited` → tell the user.
+4. When it wakes you: `idle` → `am read <name>`; `blocked` → follow the rules below, and once it is answered, run another background `am wait`; `stalled` → tell the user why (`am status <name>`) and do not resend or retry on your own; another `am wait` reports the same stall only once; `exited` → tell the user.
 
 Without such a tool, wait with `--wait --timeout` as in the workflow above.
 

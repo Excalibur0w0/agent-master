@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 
 import type { AgentRecord } from "../registry.ts";
-import { codexFinalReply, codexInterrupted, jsonLines, readFrom } from "../transcript.ts";
-import { AmError, poll, shellCommand, sleep, type Driver } from "./types.ts";
+import { codexFailure, codexFinalReply, codexInterrupted, codexTurnEnded, jsonLines, modifiedAt, readFrom } from "../transcript.ts";
+import { AmError, poll, shellCommand, sleep, stalledView, type Driver } from "./types.ts";
 
 const HOOK = fileURLToPath(new URL("../../hooks/codex.sh", import.meta.url));
 
@@ -147,12 +147,16 @@ export const codex: Driver = {
     return warnings;
   },
 
-  async launch({ model, args, bin }) {
+  async launch({ model, args, bin, resume }) {
     const overrides = trustOverrides(args);
+    const fields: Record<string, string> = {};
+    if (Object.keys(overrides).length) fields.trustOverride = JSON.stringify(overrides);
+    if (resume) fields.session = resume;
     return {
       // An update prompt at startup would take the first prompt's Enter as its answer.
-      command: [bin ?? "codex", ...codexHookArgs(), "-c", "check_for_update_on_startup=false", ...(model ? ["-m", model] : []), ...args],
-      fields: Object.keys(overrides).length ? { trustOverride: JSON.stringify(overrides) } : undefined,
+      // `codex resume <id>` takes the same options as codex itself.
+      command: [bin ?? "codex", ...(resume ? ["resume", resume] : []), ...codexHookArgs(), "-c", "check_for_update_on_startup=false", ...(model ? ["-m", model] : []), ...args],
+      fields: Object.keys(fields).length ? fields : undefined,
     };
   },
 
@@ -180,9 +184,19 @@ export const codex: Driver = {
       const ready = Date.now() - record.startedAt >= STARTUP_SETTLE_MS && (await trustAnswered(record));
       return { state: ready ? "idle" : "starting", detail: "" };
     }
-    if (record.state === "working" || record.state === "blocked") {
+    if (record.state === "working" || record.state === "blocked" || record.state === "idle") {
+      const records = jsonLines((await readFrom(record.transcript, record.offset)).text);
       // Backstop in case the Interrupt hook was missed.
-      if (codexInterrupted(jsonLines((await readFrom(record.transcript, record.offset)).text))) return { state: "idle", detail: "interrupted" };
+      if (record.state !== "idle" && codexInterrupted(records)) return { state: "idle", detail: "interrupted" };
+      // A failed turn (usage limit, content filter, server error) fires no Stop hook.
+      const failure = codexFailure(records);
+      if (failure) return stalledView(failure.reason, failure.message, `${record.turn}:${failure.id}`);
+      if (record.state === "working") {
+        // Backstop in case the Stop hook was missed.
+        if (codexTurnEnded(records)) return { state: "idle", detail: "" };
+        const written = await modifiedAt(record.transcript);
+        return { state: "working", detail: record.detail, activity: Math.max(written ?? 0, record.updatedAt * 1000) };
+      }
     }
     return { state: record.state, detail: record.detail };
   },

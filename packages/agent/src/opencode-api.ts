@@ -15,6 +15,40 @@ export interface OpencodeSession {
   time: { created: number; updated: number };
 }
 
+/** A model as opencode 2 names it; `provider/model#variant` on am's command line. */
+export interface ModelRef {
+  providerID: string;
+  id: string;
+  variant?: string;
+}
+
+export function modelRef(model: string): ModelRef {
+  const slash = model.indexOf("/");
+  if (slash < 1) throw new Error("opencode model must use provider/model format");
+  const [id, variant] = model.slice(slash + 1).split("#");
+  return { providerID: model.slice(0, slash), id, ...(variant ? { variant } : {}) };
+}
+
+export interface OpencodeSessionInfo {
+  id: string;
+  model?: ModelRef;
+  time?: { created?: number; updated?: number };
+}
+
+/** opencode 2's structured error, on a failed turn or a retry. */
+export interface OpencodeError {
+  type: string;
+  message: string;
+}
+
+/** The raw state of opencode 2's latest assistant message. */
+export interface OpencodeTurn {
+  id: string;
+  retry?: { attempt: number; at?: number; error: OpencodeError };
+  error?: OpencodeError;
+  time?: { created?: number; completed?: number };
+}
+
 export interface OpencodeMessage {
   info: { id: string; role: string; time?: { created?: number } };
   parts: Array<{ type: string; text?: string }>;
@@ -95,14 +129,24 @@ export class OpencodeApi {
     return entries[0]?.id ?? "";
   }
 
-  createSession(cwd: string, model?: string): Promise<OpencodeSession> {
-    const slash = model?.indexOf("/") ?? -1;
-    if (model && slash < 1) throw new Error("opencode model must use provider/model format");
-    const [id, variant] = (model?.slice(slash + 1) ?? "").split("#");
-    return this.request("POST", "/session", {
-      location: { directory: cwd },
-      ...(model ? { model: { providerID: model.slice(0, slash), id, ...(variant ? { variant } : {}) } } : {}),
-    });
+  createSession(cwd: string, model?: string): Promise<OpencodeSessionInfo> {
+    return this.request("POST", "/session", { location: { directory: cwd }, ...(model ? { model: modelRef(model) } : {}) });
+  }
+
+  /** v2: one session, including the model (and variant) its next turn will use. */
+  sessionInfo(id = this.session): Promise<OpencodeSessionInfo> {
+    return this.request("GET", `/session/${id}`);
+  }
+
+  /** v2: what the session's next turn runs on; the TUI's own variant picker (ctrl+t) only applies when a prompt is sent from it. */
+  switchModel(id: string, model: ModelRef): Promise<unknown> {
+    return this.request("POST", `/session/${id}/model`, { model });
+  }
+
+  /** v2: the bound session's latest assistant message, with its retry and error state. */
+  async latestTurn(): Promise<OpencodeTurn | undefined> {
+    const entries = await this.request<OpencodeTurn[]>("GET", `/session/${this.session}/message?order=desc&limit=1&type=assistant`);
+    return entries[0];
   }
 
   replyPermission(id: string, reply: "once" | "always" | "reject"): Promise<unknown> {

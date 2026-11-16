@@ -34,6 +34,11 @@ function record(overrides: Partial<AgentRecord>): AgentRecord {
     url: "",
     auth: "",
     trustOverride: "",
+    model: "",
+    profile: "",
+    contract: "",
+    contractSent: "",
+    stallSeen: "",
     ...overrides,
   };
 }
@@ -52,7 +57,9 @@ test("claude status turns a stuck working state into idle once the transcript sh
   await writeFile(transcript, `${JSON.stringify({ type: "user", promptId: "p1", message: { content: [{ type: "text", text: "[Request interrupted by user]" }] } })}\n`);
   assert.deepEqual(await claude.status(record({ state: "working", transcript, turn: "p1" })), { state: "idle", detail: "interrupted" });
   assert.deepEqual(await claude.status(record({ state: "blocked", detail: "Bash", transcript, turn: "p1" })), { state: "idle", detail: "interrupted" });
-  assert.deepEqual(await claude.status(record({ state: "working", transcript, turn: "p2" })), { state: "working", detail: "" });
+  const { state, detail, activity } = await claude.status(record({ state: "working", transcript, turn: "p2" }));
+  assert.deepEqual({ state, detail }, { state: "working", detail: "" });
+  assert.ok(activity && Date.now() - activity < 60_000, "a working turn reports when its transcript last changed");
   assert.deepEqual(await claude.status(record({ state: "working", paneDead: true })), { state: "exited", detail: "" });
 });
 

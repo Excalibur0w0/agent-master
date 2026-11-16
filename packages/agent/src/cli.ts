@@ -7,47 +7,65 @@ import { Tmux } from "@agent-master/tmux";
 import {
   approveAgent,
   denyAgent,
+  forgetAgent,
   getAgent,
   interruptAgent,
   listAgents,
   openAgent,
   promptAgent,
   readReply,
+  resolveStart,
+  resumeAgent,
+  resumeLost,
+  savedAgents,
   sendKeys,
   startAgent,
   stopAgent,
   waitAgent,
   type AgentView,
+  type SavedView,
 } from "./agent.ts";
+import { config, configPath } from "./config.ts";
 import { AmError } from "./drivers/index.ts";
 import { installGlobal, installProject, uninstallGlobal } from "./install.ts";
 import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
 
 const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode / dsh) in tmux
 
-  am start <name> --kind <claude|codex|opencode|dsh> [--bin PATH] [--cwd DIR] [--model M] [--env K=V]...
-           [--window] [--timeout MS] [-- <native agent args>]
+  am start <name> (--kind <claude|codex|opencode|dsh> | --profile P) [--bin PATH] [--cwd DIR] [--model M]
+           [--env K=V]... [--contract FILE] [--window] [--timeout MS] [-- <native agent args>]
                                         Runs in its own tmux session am-<name>; --window uses a new window of the current session
+                                        --profile takes kind, bin, model, env and args from a profile in your am.json;
+                                        options given here win, and args given here follow the profile's
                                         --bin runs another executable with the kind's arguments (a provider wrapper
                                         such as a gateway's launcher for codex or claude)
-  am list                               All agents and their states
+                                        --contract (default: the profile's, else $AM_CONTRACT) is appended to the
+                                        prompts am sends it: in full the first time, then as a one-line reminder
+  am profiles                           The profiles in your am.json
+  am list [--saved]                     All agents and their states; --saved: every agent am remembers, running or not
   am open <name>                        Switch to its tmux session (outside tmux, print the attach command)
   am status <name>                      One agent's state
   am prompt <name> <text|-> [--wait] [--timeout MS]
-                                        Send a task (- reads stdin); --wait returns once idle or blocked
-  am wait <name> [--until idle,blocked] [--timeout MS]
-                                        Wait for a state
+                                        Send a task (- reads stdin); --wait returns once idle, blocked or stalled
+  am wait <name> [--until idle,blocked,stalled] [--timeout MS]
+                                        Wait for a state; a stall is reported once, the next wait waits for news
   am read <name>                        Final reply of its latest turn
   am approve <name> [--always]          Approve its pending permission request
   am deny <name>                        Deny it
   am interrupt <name>                   Interrupt the current turn
   am keys <name> <key>...               Send raw keys (tmux key names such as Enter Escape C-c)
-  am stop <name>                        Close it together with its session
+  am stop <name>                        Close it together with its session (am still remembers it)
+  am resume <name> [--window] [--timeout MS] | am resume --all
+                                        Start a remembered agent again on its last conversation, with the options it
+                                        was started with; --all: every agent lost with its tmux server (reboot, crash)
+  am forget <name>                      Drop what am remembers about an agent
   am install [--project DIR] | am uninstall
                                         Install the am command and the explicit entry points (/am, $am); --project for one project only
 
   <name> can also be a pane id (e.g. %12). Every command accepts --json.
-  States: starting / idle / working / blocked / exited / unknown`;
+  States: starting / idle / working / blocked / stalled / exited / unknown
+  stalled: its turn will not finish without you: usage limit, content filter, an API error, or no output for
+  stallAfterMinutes (default 15). Settings and profiles: ${configPath()}`;
 
 function age(startedAt: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
@@ -56,11 +74,22 @@ function age(startedAt: number): string {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
-function table(agents: AgentView[]): string {
-  if (!agents.length) return "no agents";
-  const rows = [["NAME", "KIND", "STATE", "SESSION", "AGE", "DETAIL"], ...agents.map((a) => [a.name, a.kind, a.state, a.tmuxSession, age(a.startedAt), a.detail])];
+function columns(rows: string[][]): string {
   const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => [...r[i]].length)));
   return rows.map((r) => r.map((cell, i) => cell.padEnd(widths[i])).join("  ").trimEnd()).join("\n");
+}
+
+function table(agents: AgentView[]): string {
+  if (!agents.length) return "no agents";
+  return columns([["NAME", "KIND", "STATE", "SESSION", "AGE", "DETAIL"], ...agents.map((a) => [a.name, a.kind, a.state, a.tmuxSession, age(a.startedAt), a.detail])]);
+}
+
+function savedTable(agents: SavedView[]): string {
+  if (!agents.length) return "am remembers no agents";
+  return columns([
+    ["NAME", "KIND", "STATUS", "PROFILE", "CONVERSATION", "CWD"],
+    ...agents.map((a) => [a.name, a.kind, a.status, a.profile ?? "", a.session || "-", a.cwd]),
+  ]);
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -78,6 +107,10 @@ async function main(argv: string[]): Promise<number> {
       timeout: { type: "string" },
       wait: { type: "boolean" },
       until: { type: "string" },
+      profile: { type: "string" },
+      contract: { type: "string" },
+      saved: { type: "boolean" },
+      all: { type: "boolean" },
       always: { type: "boolean" },
       project: { type: "string" },
       json: { type: "boolean" },
@@ -91,10 +124,16 @@ async function main(argv: string[]): Promise<number> {
     return positionals[0];
   };
 
+  const warn = (message: string) => process.stderr.write(`am: warning: ${message}\n`);
+  const note = (message: string) => process.stderr.write(`am: ${message}\n`);
+  const ready = (agent: AgentView) =>
+    out(agent, `${agent.name} is ready (${agent.profile ? `profile ${agent.profile}, ` : ""}${agent.kind}, tmux session ${agent.tmuxSession}; watch it with: am open ${agent.name})`);
+
   switch (command) {
     case "start": {
-      const kind = values.kind as AgentKind;
-      if (!(AGENT_KINDS as readonly string[]).includes(kind)) throw new AmError("usage", `--kind must be one of: ${AGENT_KINDS.join(", ")}`);
+      const kind = values.kind as AgentKind | undefined;
+      if (kind !== undefined && !(AGENT_KINDS as readonly string[]).includes(kind)) throw new AmError("usage", `--kind must be one of: ${AGENT_KINDS.join(", ")}`);
+      if (kind === undefined && values.profile === undefined) throw new AmError("usage", "pass --kind or --profile (see am profiles)");
       const placement = values.window ? "window" : "session";
       const env: Record<string, string> = {};
       for (const pair of values.env ?? []) {
@@ -102,25 +141,57 @@ async function main(argv: string[]): Promise<number> {
         if (at <= 0) throw new AmError("usage", `--env expects KEY=VALUE, got: ${pair}`);
         env[pair.slice(0, at)] = pair.slice(at + 1);
       }
-      const agent = await startAgent(tmux, {
+      const options = await resolveStart({
         name: target(),
         kind,
+        profile: values.profile,
         bin: values.bin,
         cwd: values.cwd,
         model: values.model,
         env,
+        contract: values.contract,
         args: positionals.slice(1),
         placement,
         timeoutMs,
-        warn: (message) => process.stderr.write(`am: warning: ${message}\n`),
       });
-      out(agent, `${agent.name} is ready (${agent.kind}, tmux session ${agent.tmuxSession}; watch it with: am open ${agent.name})`);
+      ready(await startAgent(tmux, { ...options, warn, note }));
       return 0;
     }
+    case "profiles": {
+      const { profiles } = await config();
+      const rows = Object.entries(profiles).map(([name, p]) => ({ name, ...p }));
+      const text = rows.length
+        ? columns([["PROFILE", "KIND", "MODEL", "DESCRIPTION"], ...rows.map((p) => [p.name, p.bin ? `${p.kind} (${p.bin})` : p.kind, p.model ?? "", p.description ?? ""])])
+        : `no profiles in ${configPath()}`;
+      out(rows, text);
+      return 0;
+    }
+    case "resume": {
+      const placement = values.window ? "window" : "session";
+      if (values.all) {
+        const results = await resumeLost(tmux, { placement, timeoutMs, warn, note });
+        const lines = results.map((r) => (r.agent ? `resumed ${r.name} (${r.agent.kind}, conversation ${r.agent.session})` : `could not resume ${r.name}: ${r.error}`));
+        out(results, lines.length ? lines.join("\n") : "no lost agents to resume");
+        return results.some((r) => r.error) ? 1 : 0;
+      }
+      const agent = await resumeAgent(tmux, target(), { placement, timeoutMs, warn, note });
+      out(agent, `${agent.name} resumed conversation ${agent.session} (${agent.kind}, tmux session ${agent.tmuxSession}; watch it with: am open ${agent.name})`);
+      return 0;
+    }
+    case "forget":
+      await forgetAgent(target());
+      out({ ok: true }, `forgot ${target()}`);
+      return 0;
     case "open":
       process.stdout.write(`${await openAgent(tmux, target())}\n`);
       return 0;
     case "list": {
+      if (values.saved) {
+        const saved = await savedAgents(tmux);
+        // Never print the env values an agent was started with.
+        out(saved.map(({ env, ...agent }) => ({ ...agent, env: Object.keys(env) })), savedTable(saved));
+        return 0;
+      }
       const agents = await listAgents(tmux);
       out(agents, table(agents));
       return 0;

@@ -1,4 +1,6 @@
-import { open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
+
+import { classifyFailure, type StallReason } from "./drivers/types.ts";
 
 // Transcripts are append-only JSONL files. Every read here starts at the byte
 // offset recorded when the current prompt was submitted, so cost depends on
@@ -39,6 +41,22 @@ export async function readFrom(path: string, offset: number, maxRead = MAX_READ)
   } finally {
     await handle.close();
   }
+}
+
+/** When the file last changed (ms), or undefined if it cannot be read. */
+export async function modifiedAt(path: string): Promise<number | undefined> {
+  if (!path) return undefined;
+  return stat(path).then((s) => s.mtimeMs, () => undefined);
+}
+
+/** A turn that ended on an error instead of an answer. */
+export interface TurnFailure {
+  reason: Exclude<StallReason, "no_output">;
+  message: string;
+  /** Unique per failure (the record's id). */
+  id: string;
+  /** When it was recorded (ms). */
+  at: number;
 }
 
 export function jsonLines(text: string): any[] {
@@ -94,7 +112,62 @@ export function claudeFinalReply(records: any[]): string {
   return parts.join("\n\n").trim();
 }
 
+/**
+ * Claude Code ends a turn it cannot complete (usage limit, safeguards, an API
+ * error it gave up retrying) with a synthetic assistant message flagged
+ * isApiErrorMessage. It only counts while nothing came after it: after a
+ * safeguard stop Claude may continue the turn on its own.
+ */
+export function claudeFailure(records: any[]): TurnFailure | undefined {
+  let last: any;
+  for (const r of records) if (r?.type === "assistant") last = r;
+  if (!last?.isApiErrorMessage) return undefined;
+  const content = last.message?.content;
+  const text =
+    (Array.isArray(content) ? content.filter((c: any) => c?.type === "text" && c.text).map((c: any) => c.text).join(" ") : typeof content === "string" ? content : "") ||
+    `API error (${last.error ?? "unknown"})`;
+  const reason = last.error === "rate_limit" ? "usage_limit" : last.message?.stop_reason === "refusal" ? "content_filter" : classifyFailure(text);
+  return { reason, message: text, id: String(last.uuid ?? last.timestamp ?? ""), at: Date.parse(last.timestamp) || 0 };
+}
+
 // --- Codex -------------------------------------------------------------------
+
+const codexEvent = (r: any, type: string) => r?.type === "event_msg" && r.payload?.type === type;
+
+/** Records of the latest task (from its task_started on), so an earlier task's end never stands for the current one. */
+function codexLatestTask(records: any[]): any[] {
+  let start = 0;
+  records.forEach((r, i) => {
+    if (codexEvent(r, "task_started")) start = i;
+  });
+  return records.slice(start);
+}
+
+/** Codex finished its latest task (task_complete), successfully or not. */
+export function codexTurnEnded(records: any[]): boolean {
+  return codexLatestTask(records).some((r) => codexEvent(r, "task_complete"));
+}
+
+const CODEX_FILTER_GUIDANCE = "<content_filter_guidance>";
+
+/**
+ * Codex records a failed turn as task_complete with an `error` (it fires no
+ * Stop hook then, so the pane still says working). A blocked response first
+ * shows up as a developer message carrying content-filter guidance.
+ */
+export function codexFailure(records: any[]): TurnFailure | undefined {
+  let complete: any;
+  let filtered = false;
+  for (const r of codexLatestTask(records)) {
+    if (r?.type === "event_msg" && r.payload?.type === "task_complete") complete = r;
+    if (r?.type === "response_item" && r.payload?.role === "developer" && JSON.stringify(r.payload.content ?? "").includes(CODEX_FILTER_GUIDANCE)) filtered = true;
+  }
+  const error = complete?.payload?.error;
+  if (!error) return undefined;
+  const message = String(error.message ?? error.codex_error_info ?? "turn failed");
+  const reason = error.codex_error_info === "usage_limit_exceeded" ? "usage_limit" : filtered ? "content_filter" : classifyFailure(message);
+  return { reason, message, id: String(complete.payload.turn_id ?? complete.timestamp ?? ""), at: Date.parse(complete.timestamp) || 0 };
+}
 
 export function codexInterrupted(records: any[]): boolean {
   return records.some((r) => r?.type === "event_msg" && r.payload?.type === "turn_aborted");

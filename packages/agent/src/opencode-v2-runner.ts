@@ -1,6 +1,6 @@
 // Own both the v2 API server and its TUI for the lifetime of one tmux pane.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { OpencodeApi } from "./opencode-api.ts";
+import { modelRef, OpencodeApi } from "./opencode-api.ts";
 import { poll } from "./drivers/types.ts";
 
 const [url, model, ...args] = process.argv.slice(2);
@@ -32,7 +32,17 @@ try {
   const api = new OpencodeApi(url, password);
   if (!(await poll(async () => await api.ready() || undefined, Date.now() + 45_000))) throw new Error("OpenCode 2 server did not become ready");
   if (stopping) throw new Error("OpenCode 2 server exited during startup");
-  const session = await api.createSession(process.cwd(), model || undefined);
+  // `am resume` names an existing session; otherwise each pane gets a new one.
+  const resume = process.env.AM_OPENCODE_RESUME;
+  const session = resume ? await api.sessionInfo(resume) : await api.createSession(process.cwd(), model || undefined);
+  if (model) {
+    // A variant (provider/model#max) lives on the session, which the TUI follows; make sure it took.
+    const wanted = modelRef(model);
+    const current = session.model;
+    if (current?.providerID !== wanted.providerID || current?.id !== wanted.id || (current?.variant ?? "") !== (wanted.variant ?? "")) {
+      await api.switchModel(session.id, wanted);
+    }
+  }
   const write = spawnSync("tmux", ["set-option", "-p", "-t", process.env.TMUX_PANE, "@am_session", session.id], { encoding: "utf8" });
   if (write.status !== 0) throw new Error(write.stderr || "could not bind OpenCode session to pane");
   tui = spawn("opencode", ["--server", url.replace(/\/api$/, ""), "--session", session.id, ...args], { stdio: "inherit" });

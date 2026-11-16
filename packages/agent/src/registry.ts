@@ -4,10 +4,12 @@ export const AGENT_KINDS = ["claude", "codex", "opencode", "dsh"] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
 /**
- * `starting` until the agent can take input; `exited` once its pane or process
- * is gone; `unknown` when its state source cannot be reached.
+ * `starting` until the agent can take input; `stalled` when its turn will not
+ * finish without someone stepping in (usage limit, content filter, an API
+ * error, or no output for a long time); `exited` once its pane or process is
+ * gone; `unknown` when its state source cannot be reached.
  */
-export type AgentState = "starting" | "idle" | "working" | "blocked" | "exited" | "unknown";
+export type AgentState = "starting" | "idle" | "working" | "blocked" | "stalled" | "exited" | "unknown";
 
 /** What `am` stores on an agent's tmux pane (pane-scoped `@am_*` user options). */
 export interface AgentRecord {
@@ -40,6 +42,14 @@ export interface AgentRecord {
   auth: string;
   /** codex: directories trusted for this launch only via `-c projects."<dir>".trust_level="trusted"`. */
   trustOverride: string;
+  /** The --model it was started with, and the profile, if any. */
+  model: string;
+  profile: string;
+  /** Worker contract file attached to the prompts am sends it, and the hash of the version it last received in full. */
+  contract: string;
+  contractSent: string;
+  /** The last stall an `am wait` reported, so the next one waits for something new. */
+  stallSeen: string;
 }
 
 const FIELDS = {
@@ -63,6 +73,11 @@ const FIELDS = {
   url: "#{@am_url}",
   auth: "#{@am_auth}",
   trustOverride: "#{@am_trust_override}",
+  model: "#{@am_model}",
+  profile: "#{@am_profile}",
+  contract: "#{@am_contract}",
+  contractSent: "#{@am_contract_sent}",
+  stallSeen: "#{@am_stall_seen}",
 } as const;
 
 // tmux escapes control characters in format output (e.g. \x1f becomes "\037"), but passes tabs through.

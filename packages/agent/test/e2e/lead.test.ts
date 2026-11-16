@@ -33,6 +33,9 @@ function am(...args: string[]): Promise<any> {
 }
 
 before(async () => {
+  // What am remembers about test agents (for am resume) stays out of the user's own state; set before
+  // the tmux server starts, so agents' own am calls inherit it too.
+  process.env.AM_STATE_DIR = join(workDir, "am-state");
   await mkdir(workDir, { recursive: true });
   await installProject(workDir);
   const user = await tmux.newSession("user", { width: 240, height: 60, cwd: workDir, command: "sh" });

@@ -5,13 +5,36 @@ import type { AgentKind, AgentRecord, AgentState } from "../registry.ts";
 export interface LaunchPlan {
   command: string[];
   env?: Record<string, string>;
-  /** Extra pane fields to record before the agent starts (e.g. opencode's URL). */
-  fields?: Partial<Record<"url" | "auth" | "trustOverride", string>>;
+  /** Extra pane fields to record before the agent starts (e.g. opencode's URL, the session being resumed). */
+  fields?: Partial<Record<"url" | "auth" | "trustOverride" | "session", string>>;
 }
+
+/** Why a turn will not finish without someone stepping in. */
+export type StallReason = "usage_limit" | "content_filter" | "error" | "no_output";
 
 export interface StatusView {
   state: AgentState;
   detail: string;
+  /** Set together with state `stalled`. */
+  stall?: StallReason;
+  /** Identifies this particular stall, so `am wait` reports it once. */
+  stallId?: string;
+  /** When the agent last wrote anything (ms since epoch), for the no-output check; left out when the driver cannot tell. */
+  activity?: number;
+}
+
+const STALL_LABELS: Record<StallReason, string> = { usage_limit: "usage limit", content_filter: "content filter", error: "error", no_output: "no output" };
+
+/** A failed turn's reason, from the provider's own error text. */
+export function classifyFailure(text: string): Exclude<StallReason, "no_output"> {
+  if (/usage.?limit|rate.?limit|quota|insufficient.?(balance|credit|funds)|hit your .*limit|credits/i.test(text)) return "usage_limit";
+  if (/content.?filter|safeguards?|usage policy|safety (check|classifier)/i.test(text)) return "content_filter";
+  return "error";
+}
+
+export function stalledView(stall: StallReason, message: string, stallId: string): StatusView {
+  const text = message.replace(/\s+/g, " ").trim();
+  return { state: "stalled", detail: `${STALL_LABELS[stall]}: ${text.length > 240 ? `${text.slice(0, 239)}…` : text}`, stall, stallId };
 }
 
 export interface LaunchOptions {
@@ -20,6 +43,8 @@ export interface LaunchOptions {
   args: string[];
   /** Replaces the driver's own executable: an argument-compatible wrapper, such as a gateway's launcher. */
   bin?: string;
+  /** A conversation id to reopen instead of starting a new one (`am resume`). */
+  resume?: string;
 }
 
 export interface Driver {
@@ -31,6 +56,8 @@ export interface Driver {
   launch(options: LaunchOptions): Promise<LaunchPlan>;
   /** Resolves once the agent accepts input; `reload` re-reads the pane record. */
   waitReady(tmux: Tmux, reload: () => Promise<AgentRecord>, deadline: number): Promise<void>;
+  /** Checks, once ready, that the launch took effect (e.g. a model variant); returns a line worth telling the user. */
+  confirmLaunch?(record: AgentRecord, options: LaunchOptions): Promise<string | undefined>;
   status(record: AgentRecord): Promise<StatusView>;
   /** A value that changes once the agent has accepted a newly submitted prompt. */
   promptMarker(record: AgentRecord): Promise<string>;

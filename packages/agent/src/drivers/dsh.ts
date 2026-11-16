@@ -70,7 +70,9 @@ export const dsh: Driver = {
     return (await onPath(BIN)) ? [] : [`${BIN} is not on PATH: install deepseek-harness-tui and link bin/dshcli into a PATH directory`];
   },
 
-  async launch({ model, args }) {
+  async launch({ model, args, resume }) {
+    // dshcli has no documented way to reopen a conversation in its TUI.
+    if (resume) throw new AmError("unsupported", "am cannot reopen a dsh conversation; start a new one with am start");
     const patches = [await patchFile("reporter", dshReporterPatch())];
     if (model) patches.push(await patchFile("model", dshModelPatch(model)));
     return { command: [BIN, ...patches.flatMap((path) => ["--patch", path]), ...args] };

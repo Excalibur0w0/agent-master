@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { claudeFinalReply, claudeInterrupted, jsonLines, readFrom } from "../transcript.ts";
-import { AmError, poll, shellCommand, sleep, type Driver } from "./types.ts";
+import { claudeFailure, claudeFinalReply, claudeInterrupted, jsonLines, modifiedAt, readFrom } from "../transcript.ts";
+import { AmError, poll, shellCommand, sleep, stalledView, type Driver } from "./types.ts";
 
 const HOOK = fileURLToPath(new URL("../../hooks/claude.sh", import.meta.url));
 
@@ -66,8 +66,12 @@ export const claude: Driver = {
     return [];
   },
 
-  async launch({ model, args, bin }) {
-    return { command: [bin ?? "claude", "--settings", await settingsFile(), ...(model ? ["--model", model] : []), ...args] };
+  async launch({ model, args, bin, resume }) {
+    const native = resume ? withoutSessionChoice(args) : args;
+    return {
+      command: [bin ?? "claude", "--settings", await settingsFile(), ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : []), ...native],
+      fields: resume ? { session: resume } : undefined,
+    };
   },
 
   async waitReady(_tmux, reload, deadline) {
@@ -84,9 +88,19 @@ export const claude: Driver = {
 
   async status(record) {
     if (record.paneDead) return { state: "exited", detail: "" };
-    if (record.state === "working" || record.state === "blocked") {
+    if (record.state === "working" || record.state === "blocked" || record.state === "idle") {
       const records = jsonLines((await readFrom(record.transcript, record.offset)).text);
-      if (claudeInterrupted(records, record.turn)) return { state: "idle", detail: "interrupted" };
+      if (record.state !== "idle" && claudeInterrupted(records, record.turn)) return { state: "idle", detail: "interrupted" };
+      const failure = record.state === "blocked" ? undefined : claudeFailure(records);
+      // A turn that ended (StopFailure) on an error is final. While the pane still
+      // says working, give Claude a moment: after a safeguard stop it may go on.
+      if (failure && (record.state === "idle" || Date.now() - failure.at > FAILURE_SETTLE_MS)) {
+        return stalledView(failure.reason, failure.message, `${record.turn}:${failure.id}`);
+      }
+      if (record.state === "working") {
+        const written = await modifiedAt(record.transcript);
+        return { state: "working", detail: record.detail, activity: Math.max(written ?? 0, record.updatedAt * 1000) };
+      }
     }
     return { state: record.state, detail: record.detail };
   },
@@ -124,3 +138,21 @@ export const claude: Driver = {
 };
 
 const MIN_TURN_AGE_MS = 3000;
+
+/** How long an API error must stand as the turn's last word before a working Claude counts as stalled. */
+const FAILURE_SETTLE_MS = 20_000;
+
+/** Native arguments minus any choice of conversation, so `--resume <id>` decides it alone. */
+export function withoutSessionChoice(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--resume" || arg === "-r" || arg === "--session-id") {
+      if (args[i + 1] !== undefined && !args[i + 1].startsWith("-")) i++;
+      continue;
+    }
+    if (arg === "--continue" || arg === "-c" || arg === "--fork-session" || arg.startsWith("--resume=") || arg.startsWith("--session-id=")) continue;
+    out.push(arg);
+  }
+  return out;
+}

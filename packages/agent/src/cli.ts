@@ -28,7 +28,7 @@ import {
   type SavedView,
 } from "./agent.ts";
 import { config, configPath } from "./config.ts";
-import { BUILTIN, extensions } from "./extensions.ts";
+import { BUILTIN, extensions, runAfterResumeAll } from "./extensions.ts";
 import { AmError } from "./drivers/index.ts";
 import { installGlobal, installProject, uninstallGlobal } from "./install.ts";
 import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
@@ -62,7 +62,8 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
   am stop <name>                        Close it together with its session (am still remembers it)
   am resume <name> [--window] [--timeout MS] | am resume --all
                                         Start a remembered agent again on its last conversation, with the options it
-                                        was started with; --all: every agent lost with its tmux server (reboot, crash)
+                                        was started with; --all: every agent lost with its tmux server (reboot, crash),
+                                        then what the commands below ran beside them (their "afterResumeAll" step)
   am forget <name>                      Drop what am remembers about an agent
   am install [--project DIR] | am uninstall
                                         Install the am command and the explicit entry points (/am, $am); --project for one project only
@@ -73,6 +74,9 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
   States: starting / idle / working / blocked / stalled / exited / unknown
   stalled: its turn will not finish without you: usage limit, content filter, an API error, or no output for
   stallAfterMinutes (default 15). Settings and profiles: ${configPath()}`;
+
+/** This am, for extensions to drive agents through. */
+const amBin = () => process.env.AM_BIN ?? fileURLToPath(new URL("../bin/am", import.meta.url));
 
 /** am's own usage, then each extension's (`<executable> help`). */
 function fullUsage(): string {
@@ -114,7 +118,7 @@ async function main(argv: string[]): Promise<number> {
   const extension = command && !BUILTIN.has(command) ? extensions().get(command) : undefined;
   if (extension) {
     // Extensions drive agents through am's command line: point them at this am.
-    const run = spawnSync(extension, rest, { stdio: "inherit", env: { ...process.env, AM_BIN: process.env.AM_BIN ?? fileURLToPath(new URL("../bin/am", import.meta.url)) } });
+    const run = spawnSync(extension, rest, { stdio: "inherit", env: { ...process.env, AM_BIN: amBin() } });
     if (run.error) throw run.error;
     return run.status ?? 1;
   }
@@ -196,7 +200,10 @@ async function main(argv: string[]): Promise<number> {
       if (values.all) {
         const results = await resumeLost(tmux, { placement, timeoutMs, warn, note });
         const lines = results.map((r) => (r.agent ? `resumed ${r.name} (${r.agent.kind}, conversation ${r.agent.session})` : `could not resume ${r.name}: ${r.error}`));
-        out(results, lines.length ? lines.join("\n") : "no lost agents to resume");
+        // Extensions bring back what they ran beside those agents (a watcher's feed loop, say).
+        const extra = runAfterResumeAll(amBin());
+        if (values.json && extra.length) process.stderr.write(`${extra.join("\n")}\n`);
+        out(results, [...(lines.length ? lines : ["no lost agents to resume"]), ...extra].join("\n"));
         return results.some((r) => r.error) ? 1 : 0;
       }
       const agent = await resumeAgent(tmux, target(), { placement, timeoutMs, warn, note });

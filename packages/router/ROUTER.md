@@ -45,7 +45,7 @@ Watchers (`am watcher`) put messages that need the user into the same ledger, un
 
 ## Taking over
 
-`am router start` sends you the message `Take over: your ledger lists work in flight (am ledger show).` when the ledger holds tasks. Then, before anything else:
+When the ledger holds tasks, `am router start` sends you a message that ends with `Take over: your ledger lists work in flight (am ledger show).` On a new conversation you remember nothing else; on a continued one (`--resume`) you remember, but the background `am wait` commands you started ended with the old process. Either way, before anything else:
 
 1. Run `am ledger show` and `am list`.
 2. A worker of a task in progress that is not running: `am resume <name>`, which reopens its conversation. If that fails, set the task waiting on the user and say so.

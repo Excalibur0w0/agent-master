@@ -8,7 +8,8 @@ import { LEDGER, loadStart, routerHome, saveStart, writeHome, type SavedStart } 
 
 const USAGE = `am router — a long-running agent session that hands your requests to other coding agents through am
 
-  am router start [name] [--kind K] [--model M] [--project DIR] [--worker-kind K] [--contract FILE] [-- <native agent args>]
+  am router start [name] [--kind K] [--model M] [--project DIR] [--worker-kind K] [--contract FILE]
+                  [--resume | --conversation ID] [-- <native agent args>]
                      Start the router (default name: router) in tmux session am-<name>; talk to it with: am open <name>
                      --kind: the router's own agent (default claude); --worker-kind: its workers' default (default claude)
                      --project: where workers run unless you name another directory (default: the current directory)
@@ -17,9 +18,12 @@ const USAGE = `am router — a long-running agent session that hands your reques
                      A claude router starts with --dangerously-skip-permissions unless you pass a permission mode after --
                      Its ledger is am ledger (--router <name>); when it lists work, a new router is first asked to take
                      it over. A LEDGER.md left in the router's directory by an older router is moved into it first
-  am router restart [name]
-                     Replace a router with a fresh session started the same way; the new one picks up from its ledger.
-                     Run it from your own terminal, not from inside the router
+                     --resume continues the router's last conversation instead of a new one; --conversation ID continues
+                     that one (claude, codex, opencode routers)
+  am router restart [name] [--resume | --conversation ID]
+                     Replace a router with a new session started the same way; it picks up from its ledger.
+                     Without --resume it starts on a new conversation; with it, on the conversation it has now (the
+                     session field of am status <name> --json). Run it from your own terminal, not from inside the router
   am router stop [name]
                      Stop the router; its ledger stays for the next start
 
@@ -27,6 +31,9 @@ const USAGE = `am router — a long-running agent session that hands your reques
 
 const SKIP_PERMISSIONS = "--dangerously-skip-permissions";
 const TAKE_OVER = "Take over: your ledger lists work in flight (am ledger show).";
+/** On a continued conversation the router remembers, but its background waits died with the old process. */
+const TAKE_OVER_RESUMED =
+  "You were restarted on this same conversation. Your background am waits ended with the old process, and your instructions may have changed: follow them as they are now. Take over: your ledger lists work in flight (am ledger show).";
 
 class UsageError extends Error {}
 
@@ -59,6 +66,32 @@ function withoutResume(kind: string, args: string[]): string[] {
     out.push(args[i]);
   }
   return out;
+}
+
+/** The conversation to continue: the running router's current one (it follows a /resume inside it), else the last one am remembers. */
+function lastConversation(name: string): string | undefined {
+  const status = am(["status", name, "--json"], true);
+  if (status.status === 0) {
+    try {
+      const view = JSON.parse(status.stdout);
+      if (view.state !== "exited" && view.session) return view.session;
+    } catch {}
+  }
+  try {
+    const saved = JSON.parse(am(["list", "--saved", "--json"], true).stdout) as Array<{ name: string; session?: string }>;
+    return saved.find((agent) => agent.name === name)?.session || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** --conversation ID, or with --resume the router's last conversation; undefined for a new one. */
+function conversationFor(name: string, values: { resume?: boolean; conversation?: string }): string | undefined {
+  if (values.conversation) return values.conversation;
+  if (!values.resume) return undefined;
+  const id = lastConversation(name);
+  if (!id) throw new UsageError(`am has no conversation recorded for ${name}; start it without --resume, or name one with --conversation ID`);
+  return id;
 }
 
 function running(name: string): string | undefined {
@@ -96,7 +129,7 @@ function ledgerHasWork(name: string): boolean {
 }
 
 /** Writes the router's home and starts it there; on a ledger with work, asks it to take it over. */
-async function launch(name: string, options: SavedStart): Promise<number> {
+async function launch(name: string, options: SavedStart, conversation?: string): Promise<number> {
   // A Claude router runs without permission prompts unless its own arguments choose a mode.
   // It takes the flag: Claude Code ignores a bypass default written in project settings.
   const choosesMode = options.args.some((arg) => arg === SKIP_PERMISSIONS || arg.startsWith("--permission-mode"));
@@ -113,16 +146,18 @@ async function launch(name: string, options: SavedStart): Promise<number> {
     "--env", `AM_ROUTER=${name}`,
     // Workers the router starts inherit it: am attaches the contract to what it sends them.
     ...(options.contract ? ["--env", `AM_CONTRACT=${options.contract}`] : []),
+    // Never saved in router.json: a later plain restart starts a new conversation again.
+    ...(conversation ? ["--conversation", conversation] : []),
     ...(agentArgs.length ? ["--", ...agentArgs] : []),
   ]);
   if (started.status !== 0) return started.status ?? 1;
   if (!options.contract) process.stdout.write(`note: no worker contract (${defaultContract()} does not exist); workers get only the user's words\n`);
   if (ledgerHasWork(name)) {
-    const kickoff = am(["prompt", name, "-"], true, TAKE_OVER);
+    const kickoff = am(["prompt", name, "-"], true, conversation ? TAKE_OVER_RESUMED : TAKE_OVER);
     if (kickoff.status !== 0) process.stderr.write(`am router: could not ask ${name} to take over its ledger: ${kickoff.stderr.trim()}\n`);
     else process.stdout.write(`${name} is taking over the work in its ledger (am ledger show --router ${name})\n`);
   }
-  process.stdout.write(`${name} routes your requests to workers in ${options.project} unless you name another directory; talk to it with: am open ${name}\n`);
+  process.stdout.write(`${name} routes your requests to workers in ${options.project} unless you name another directory${conversation ? `; it continues conversation ${conversation}` : ""}; talk to it with: am open ${name}\n`);
   return 0;
 }
 
@@ -137,6 +172,8 @@ async function start(args: string[]): Promise<number> {
       project: { type: "string" },
       "worker-kind": { type: "string" },
       contract: { type: "string" },
+      resume: { type: "boolean" },
+      conversation: { type: "string" },
     },
   });
   // The name comes before "--"; the router agent's own arguments after it.
@@ -160,22 +197,25 @@ async function start(args: string[]): Promise<number> {
 
   // Its instructions are rewritten on every start, so never under a router that is still running.
   const state = running(name);
-  if (state) throw new Error(`${name} is already running (${state}); talk to it with: am open ${name}, or replace it with a fresh session: am router restart ${name}`);
+  if (state) throw new Error(`${name} is already running (${state}); talk to it with: am open ${name}, or replace it with a new session: am router restart ${name} [--resume]`);
 
-  return launch(name, { kind: values.kind ?? "claude", model: values.model, project, workerKind: values["worker-kind"] ?? "claude", contract, args: native });
+  const conversation = conversationFor(name, values);
+  return launch(name, { kind: values.kind ?? "claude", model: values.model, project, workerKind: values["worker-kind"] ?? "claude", contract, args: native }, conversation);
 }
 
 async function restart(args: string[]): Promise<number> {
-  const { positionals } = parseArgs({ args, allowPositionals: true, options: {} });
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { resume: { type: "boolean" }, conversation: { type: "string" } } });
   const [name = "router", extra] = positionals;
   if (extra !== undefined) throw new UsageError(`unexpected argument: ${extra}`);
   const saved = await loadStart(routerHome(name));
   if (!saved) throw new UsageError(`no saved start options for ${name}; start it with am router start`);
+  // Read before stopping: the running router knows its current conversation.
+  const conversation = conversationFor(name, values);
   if (running(name)) {
     const stopped = am(["stop", name]);
     if (stopped.status !== 0) return stopped.status ?? 1;
   }
-  return launch(name, saved);
+  return launch(name, saved, conversation);
 }
 
 async function stop(args: string[]): Promise<number> {

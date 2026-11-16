@@ -54,6 +54,7 @@ am stop reviewer
 | --- | --- |
 | `am start <name> --kind claude\|codex\|opencode\|dsh [--bin PATH] [--cwd] [--model] [--env K=V] [--contract FILE] [--window] [-- 原生参数]` | 在独立会话 `am-<name>` 里启动（`--window` 改为当前会话的新窗口）、注入状态上报、等就绪；`--bin` 换成同参数的兼容 CLI（仅 claude / codex） |
 | `am start <name> --profile <预设> [--cwd] [其它选项]` | 用本机预设起（见下文「预设」）；命令行上的选项覆盖预设，`--` 后的参数接在预设的参数后面 |
+| `am start <name> ... --conversation <ID>` | 在这个 agent 已有的会话上起，不开新会话（claude / codex / opencode，dsh 不支持） |
 | `am profiles` | 列出本机预设 |
 | `am open <name>` | 切到它的会话（tmux 外打印 `tmux attach` 命令）；也可以 `prefix + s` 选 |
 | `am list` / `am status <name>` | 状态：`starting` `idle` `working` `blocked` `stalled` `exited` `unknown`；`detail` 说明在等什么、为什么卡住 |
@@ -236,6 +237,7 @@ cd ~/code/my-app
 am router start          # 常驻会话 am-router（tmux 会话名）；worker 默认在当前目录、默认用 claude
 am open router           # 进去跟它说话；它派出的 worker 也在 am list 里，随时 am open 接管
 am router restart        # 换一个新会话，接着台账干
+am router restart --resume   # 重启进程，但接着用它现在这个会话
 am router stop
 ```
 
@@ -258,6 +260,8 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 - 以前的 router 把台账写在自己目录的 `LEDGER.md` 里。`am router start` / `restart` 时如果还有这个文件，会先把它导入数据库（这时旧 router 已经停了，文件是最新的），再改名成 `LEDGER.md.imported-<日期>`，只导一次；导入失败就不启动，文件原样留着。
 
 **换新 router**：上下文压缩多了就换一个新会话，`am router restart [name]` 会停掉旧的、用当初 `am router start` 的参数（存在 router 目录的 `router.json` 里，不带 `--resume`）起一个新的。新 router 启动时只要台账里有事，`am router` 就先发一句 `Take over: your ledger lists work in flight (am ledger show).`：它看台账、`am list`，把没在运行的 worker `am resume` 回来，给还在干活的 worker 重新挂上后台 `am wait`，再用几行告诉你手上有哪些事。要在你自己的终端里运行 `restart`，不要在 router 的会话里运行（会把自己关掉）。
+
+**接着用原来的会话**：`am router restart --resume` 停掉进程、用同样的参数重起，但接回它现在的会话（`am status router --json` 的 `session`；在 router 里用 `/resume` 换过会话的话，取的是换过之后的那个），所以它记得之前聊过的内容；规则文件照样按新的重写。`am router start --resume` 接回 am 记着的它最后一个会话；`--conversation <ID>` 接回指定的会话。不加这些参数时照旧开新会话，`--resume` 也不会被记进 `router.json`。接回会话时同样会发接手提示，并说明旧进程里挂着的后台 `am wait` 已经随进程结束，要它重新挂上。
 
 **环境**：`am router start` 把 `AM_ROUTER=<name>` 放进 router 所在 pane 的环境，它的 `am ledger` 命令因此默认写自己的台账。
 

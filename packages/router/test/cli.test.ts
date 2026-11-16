@@ -11,7 +11,8 @@ const bin = resolve(import.meta.dirname, "../bin/am-router");
 
 /**
  * A stand-in for am that logs its arguments; `status` reports $AM_STATE when set, or no such agent;
- * `ledger list` prints $AM_LEDGER_LIST (default: an empty ledger); `ledger import` fails when $AM_IMPORT_FAIL is set.
+ * `ledger list` prints $AM_LEDGER_LIST (default: an empty ledger); `ledger import` fails when $AM_IMPORT_FAIL is set;
+ * `list --saved` prints $AM_SAVED; a prompt's text is kept in $AM_LOG.prompt.
  */
 async function fakeAm(dir: string): Promise<string> {
   const path = join(dir, "am");
@@ -21,8 +22,10 @@ async function fakeAm(dir: string): Promise<string> {
 printf '%s\\n' "$*" >> "$AM_LOG"
 if [ "$1" = status ]; then
   [ -n "$AM_STATE" ] || { echo '{"error":"not_found"}' >&2; exit 1; }
-  echo "{\\"state\\":\\"$AM_STATE\\"}"
+  echo "{\\"state\\":\\"$AM_STATE\\",\\"session\\":\\"$AM_SESSION\\"}"
 fi
+if [ "$1 $2" = "list --saved" ]; then echo "\${AM_SAVED:-[]}"; fi
+if [ "$1" = prompt ]; then cat > "$AM_LOG.prompt"; fi
 if [ "$1 $2" = "ledger list" ]; then echo "\${AM_LEDGER_LIST:-[]}"; fi
 if [ "$1 $2" = "ledger import" ]; then
   [ -z "$AM_IMPORT_FAIL" ] || { echo "cannot read it" >&2; exit 1; }
@@ -128,6 +131,34 @@ test("an old LEDGER.md moves into am ledger once; a router whose ledger holds wo
   assert.match(failed.stderr, /could not move .*LEDGER\.md into the ledger, so router was not started: cannot read it/);
   assert.ok(existsSync(ledger));
   assert.ok(!(await calls()).at(-1)!.startsWith("start "));
+});
+
+test("--resume continues the router's conversation; without it a restart starts a new one", async () => {
+  const { dir, run, calls, home } = await setup();
+  const starts = async () => (await calls()).filter((call) => call.startsWith("start "));
+  const base = `start router --kind claude --cwd ${home("router")} --env AM_ROUTER=router`;
+  assert.equal((await run(["start"])).code, 0);
+
+  // restart --resume: the conversation the running router has now (after a /resume inside it, too).
+  const kept = await run(["restart", "--resume"], { AM_STATE: "idle", AM_SESSION: "conv-now", AM_LEDGER_LIST: '[{"id":1}]' });
+  assert.equal(kept.code, 0, kept.stderr);
+  assert.equal((await starts()).at(-1), `${base} --conversation conv-now -- --dangerously-skip-permissions`);
+  assert.match(kept.stdout, /it continues conversation conv-now/);
+  assert.match(await readFile(join(dir, "log.prompt"), "utf8"), /^You were restarted on this same conversation\. Your background am waits ended with the old process[\s\S]*Take over: your ledger lists work in flight/);
+
+  // A plain restart after it: a new conversation, and the plain takeover message.
+  assert.equal((await run(["restart"], { AM_STATE: "idle", AM_SESSION: "conv-now", AM_LEDGER_LIST: '[{"id":1}]' })).code, 0);
+  assert.equal((await starts()).at(-1), `${base} -- --dangerously-skip-permissions`, "--resume is never remembered");
+  assert.equal(await readFile(join(dir, "log.prompt"), "utf8"), "Take over: your ledger lists work in flight (am ledger show).");
+
+  // start --resume on a stopped router: the last conversation am remembers for it.
+  assert.equal((await run(["start", "--resume"], { AM_SAVED: '[{"name":"other","session":"x"},{"name":"router","session":"conv-saved"}]' })).code, 0);
+  assert.equal((await starts()).at(-1), `${base} --conversation conv-saved -- --dangerously-skip-permissions`);
+  assert.equal((await run(["start", "--conversation", "conv-picked"])).code, 0);
+  assert.equal((await starts()).at(-1), `${base} --conversation conv-picked -- --dangerously-skip-permissions`);
+  const none = await run(["start", "ops", "--resume"]);
+  assert.equal(none.code, 2);
+  assert.match(none.stderr, /am has no conversation recorded for ops; start it without --resume, or name one with --conversation ID/);
 });
 
 test("restart starts a fresh session the way the router was first started", async () => {

@@ -26,11 +26,15 @@ importers:
         specifier: ^1.9.0
         version: 1.9.0
 
+  packages/router: {}
+
   packages/shell-ask:
     dependencies:
       '@agent-master/tmux':
         specifier: workspace:*
         version: link:../tmux
+
+  packages/subscriber: {}
 
   packages/tmux: {}
 

@@ -1,0 +1,16 @@
+{
+  "name": "@agent-master/subscriber",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "A long-running, read-only Claude session that watches a message source and keeps a summary of what needs you, built on the am CLI.",
+  "scripts": {
+    "test": "node --test \"test/*.test.ts\""
+  },
+  "am": {
+    "commands": {
+      "subscribe": "bin/am-subscribe"
+    }
+  }
+}

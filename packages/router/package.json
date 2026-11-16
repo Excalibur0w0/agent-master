@@ -5,9 +5,6 @@
   "license": "MIT",
   "type": "module",
   "description": "A long-running agent session that hands your requests to other coding agents, built on the am CLI.",
-  "bin": {
-    "am-router": "./bin/am-router"
-  },
   "scripts": {
     "test": "node --test \"test/*.test.ts\"",
     "test:e2e": "node --test --test-concurrency=1 \"test/e2e/*.test.ts\""

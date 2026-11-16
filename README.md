@@ -51,18 +51,91 @@ am stop reviewer
 
 | 命令 | 作用 |
 | --- | --- |
-| `am start <name> --kind claude\|codex\|opencode\|dsh [--bin PATH] [--cwd] [--model] [--env K=V] [--window] [-- 原生参数]` | 在独立会话 `am-<name>` 里启动（`--window` 改为当前会话的新窗口）、注入状态上报、等就绪；`--bin` 换成同参数的兼容 CLI（仅 claude / codex） |
+| `am start <name> --kind claude\|codex\|opencode\|dsh [--bin PATH] [--cwd] [--model] [--env K=V] [--contract FILE] [--window] [-- 原生参数]` | 在独立会话 `am-<name>` 里启动（`--window` 改为当前会话的新窗口）、注入状态上报、等就绪；`--bin` 换成同参数的兼容 CLI（仅 claude / codex） |
+| `am start <name> --profile <预设> [--cwd] [其它选项]` | 用本机预设起（见下文「预设」）；命令行上的选项覆盖预设，`--` 后的参数接在预设的参数后面 |
+| `am profiles` | 列出本机预设 |
 | `am open <name>` | 切到它的会话（tmux 外打印 `tmux attach` 命令）；也可以 `prefix + s` 选 |
-| `am list` / `am status <name>` | 状态：`starting` `idle` `working` `blocked` `exited` `unknown`；`detail` 说明在等什么 |
-| `am prompt <name> <text\|-> [--wait] [--timeout]` | 粘贴 + 回车，并确认对方收到；blocked / working 时拒绝 |
-| `am wait <name> [--until idle,blocked]` | 等状态 |
+| `am list` / `am status <name>` | 状态：`starting` `idle` `working` `blocked` `stalled` `exited` `unknown`；`detail` 说明在等什么、为什么卡住 |
+| `am list --saved` | am 记得的所有 agent：运行中、`stopped`（am stop 关的）、`exited`（自己退出的）、`lost`（随 tmux 或机器重启丢的） |
+| `am prompt <name> <text\|-> [--wait] [--timeout]` | 粘贴 + 回车，并确认对方收到；blocked / working 时拒绝；带合同的 agent 自动附上合同 |
+| `am wait <name> [--until idle,blocked,stalled]` | 等状态；同一次卡住只报一次 |
 | `am read <name>` | 最近一轮的最终回复 |
 | `am approve <name> [--always]` / `am deny <name>` | 处理权限请求（`--always` 仅 opencode） |
-| `am interrupt <name>` / `am keys <name> <key>...` / `am stop <name>` | 中断 / 原始按键 / 关闭 |
+| `am interrupt <name>` / `am keys <name> <key>...` / `am stop <name>` | 中断 / 原始按键 / 关闭（am 仍记得它，可以 resume） |
+| `am resume <name>` / `am resume --all` | 用当初的启动参数重新起来，并接回它原来的会话；`--all` 恢复所有随 tmux 或机器重启丢掉的 agent |
+| `am forget <name>` | 删掉 am 对它的记录 |
 
 所有命令支持 `--json`。每个 agent 一个后台会话，`am list` 的 SESSION 列就是会话名；在会话里可以直接接管（输入、Esc、批准），`am stop` 会连同会话一起关掉。
 
 通过 `/am` 派活时，如果主 agent 能在后台运行命令、并在命令结束时被唤醒（Claude Code 的 Bash 后台运行就可以），指南会让它不再前台干等：用不带 `--wait` 的 `am prompt` 派出任务后，把 `am wait <name>` 放到后台，然后告诉你谁在干活，自己接着做别的事或结束这一轮；等对方做完（idle）、需要人决定（blocked）或退出时再被唤醒处理。没有这种能力的 agent 仍然用 `--wait --timeout` 前台等待。
+
+### 预设（`--profile`）
+
+每种 worker 的启动参数又长又容易写错，可以在本机配置文件 `~/.config/agent-master/am.json`（遵循 `XDG_CONFIG_HOME`）里写成预设，然后一个词起好。这个文件只在你的机器上，仓库里没有任何人的预设：
+
+```json
+{
+  "stallAfterMinutes": 15,
+  "profiles": {
+    "codex": {
+      "description": "Codex，1M 上下文，关 fast",
+      "kind": "codex",
+      "model": "gpt-6.1-sol",
+      "env": { "HTTPS_PROXY": "http://127.0.0.1:7897" },
+      "args": ["--yolo", "--no-alt-screen", "--disable", "fast_mode"]
+    },
+    "deepseek": { "kind": "opencode", "model": "deepseek/deepseek-flash#max", "args": ["--auto"] }
+  }
+}
+```
+
+```sh
+am profiles                                   # 看有哪些
+am start fix-login --profile codex --cwd ~/code/app
+am start fix-login --profile codex -- -c model_reasoning_effort=high   # 命令行的参数接在预设后面
+```
+
+- 字段：`kind`（必填）、`bin`、`model`、`env`、`args`（`--` 后的原生参数）、`contract`（见下文）、`description`（`am profiles` 显示）。`bin`、`contract` 和以 `~/` 开头的参数会展开成家目录。
+- 命令行上的 `--bin`、`--model`、`--contract` 覆盖预设；`--env` 与预设合并（命令行优先）；`--kind` 与预设的 kind 不同会报错。
+- opencode 的档位（variant）写在模型后面：`deepseek/deepseek-flash#max`。am 在创建会话时就设好档位，起来后再通过 opencode 的 API 读回会话的模型确认；对不上就关掉这个 agent 并报 `variant_unconfirmed`，不会让它用错的档位干活。opencode 界面左下角在第一次提交前不显示档位，这不影响实际使用的档位；不要在界面里按 ctrl+t，那会在下次提交时把会话改成界面上选的档位。档位只支持 OpenCode 2。
+
+### worker 合同（`--contract`）
+
+给 worker 的固定约束（不推送、不打印密钥……）和统一的回报格式写在一个本机文件里，am 发给它的每个任务都会自动带上：第一次附全文，之后只附一行「合同仍然有效」的提醒；合同文件改了就再附一次全文。以 `/` 开头的斜杠命令不附。
+
+- 合同从哪来：`am start --contract FILE`，或预设里的 `contract`，都没有时用环境变量 `$AM_CONTRACT`。`am-router` 用最后这种方式把你的合同交给它派出的每个 worker（见 am-router 一节），router 自己不带合同。
+- 内容由你自己维护，仓库里没有默认内容；`am-router` 默认用 `~/.config/agent-master/worker-contract.md`。
+- 合同文件不见了，`am prompt` 会直接报错 `contract_missing`，不会悄悄不带合同就发出去。
+
+### 卡住识别（`stalled`）
+
+agent 看起来还在干活、其实不会再有进展的情况，am 报成 `stalled`，`detail` 说明原因。`am wait` 默认也在 `stalled` 时返回；同一次卡住只报一次，再次 `am wait` 会等到有新变化（恢复工作、做完、或者新的一次卡住）。
+
+| 原因 | detail 开头 | 怎么识别（都不读屏） |
+| --- | --- | --- |
+| 用量上限 | `usage limit:` | Claude：对话记录里本轮最后一条是 `isApiErrorMessage` 且 `error: rate_limit`（如 5 小时上限）；Codex：本轮的 `task_complete` 带 `error.codex_error_info: usage_limit_exceeded`（这时 Codex 不触发 Stop hook，所以原来会一直显示 working）；opencode 2：最新一轮重试的错误是 `provider.quota` / `provider.rate-limit` |
+| 内容过滤 | `content filter:` | Claude：API 错误消息带 `stop_reason: refusal`（Claude 自己接着说下去的不算）；Codex：本轮出现过 `<content_filter_guidance>`，最后以错误结束；opencode 2：`provider.content-filter` |
+| 其它 API 错误 | `error:` | 同上，其它错误类型（例如模型满载、网络断开且重试用尽） |
+| 长时间没有输出 | `no output for` | 在 working 状态下，对话记录（opencode 2 是会话的更新时间）超过 `stallAfterMinutes`（默认 15 分钟，在 am.json 里改）没有变化 |
+
+- 因错误结束的一轮（前三种）已经回到输入框，`am prompt` 可以直接发「继续」；「长时间没有输出」时它可能还在跑很久的命令，`am prompt` 照样拒绝，可以 `am open` 看一眼或 `am interrupt`。
+- Claude 的 API 错误要在本轮最后保留 20 秒以上才算（安全分类拦截后 Claude 可能自己接着做）；Codex 漏掉 Stop hook 但 `task_complete` 已写出时直接报 idle。
+- dsh 和 OpenCode 1.x 目前识别不了这些原因，也不做「长时间没有输出」的判断。
+
+### 恢复（`am resume`）
+
+am 在 `~/.local/state/agent-master/agents/<name>.json`（遵循 `XDG_STATE_HOME`，可用 `AM_STATE_DIR` 换位置，文件权限 600：里面有 `--env` 的值）记下每个 agent 的 kind、启动参数（bin、model、env、原生参数、预设名、合同）和它自己的会话 ID。会话 ID 来自 hook 或 API，am 每次查看状态时同步（Codex 要等第一次 `am prompt` 后才有）。
+
+```sh
+am resume fix-login     # 关掉的（am stop）或丢掉的 agent，用原参数重新起来并接回原会话
+am resume --all         # 重启机器或 tmux 之后：恢复所有随 tmux 丢掉的 agent，不碰你用 am stop 关的和自己退出的
+am list --saved         # 看 am 记得哪些
+```
+
+- 各 kind 怎么接回会话：Claude `--resume <id>`（原参数里的 `--resume`、`--continue` 会去掉）；Codex `codex resume <id>`（用 `--bin` 换了启动器的同样适用）；opencode 2 让 am 的 runner 绑定已有会话（不再新建），并按记录的模型和档位校正；opencode 1 `--session <id>`。dsh 暂不支持。
+- 恢复的 agent 已经收到过合同，之后只附提醒。
+- 升级 agent 的 CLI 后要让 worker 用上新版本：`am stop <name>` 再 `am resume <name>`。
+- 这个功能上线前就已经在跑的 agent 没有记录，恢复不了。
 
 OpenCode 1.x / 2.x 会按 `opencode --version` 自动适配。2.x 使用独立的本机 `serve` 服务和绑定会话的 TUI，模型在创建会话时设置；`am stop` 或关闭 TUI 会一并退出该服务。2.x 的状态、权限、表单和回复通过 `/api` 读取，发送确认使用持久化的用户消息 ID，因此快速完成的回复也不会漏掉确认。
 
@@ -144,13 +217,14 @@ hook（dsh 是插件）把状态写在 agent 所在 pane 的 `@am_*` 选项上�
 - Claude / Codex：两个**完全相同**的工具调用（同名同输入）并行等待批准时，先完成的那个会把 blocked 清掉；hook 里没有能区分它们的字段。
 - opencode 的会话按「`am prompt` 确认收到时服务端正在跑的会话」绑定。人在它的界面里切换或新建会话后，`am read` 仍读绑定的那个，直到下一次 `am prompt`；还没收到过 `am prompt` 且空闲时报 `no_session`，不会去猜「最新的会话」（同一项目的其他 opencode 实例共享会话列表）。
 - Codex 的目录信任：在 git 仓库里只认仓库根目录那一条（信任过父目录不算），`-c projects."<dir>".trust_level="trusted"` 也只在 git 仓库外生效（后出现的 `untrusted` 会撤销）。hook 信任按 Codex 源码的算法（`codex-rs` 的 `hook_hash`：规范化 hook 定义的 JSON 做 sha256）逐条核对 `[hooks.state]`，仓库搬家、hook 被禁用都会被识别。这依赖 Codex 0.160 的算法，Codex 改算法后 `am` 会一直等待信任，需要跟着更新。`config.toml` 用 TOML 解析器读取，解析失败按「未信任」处理。
+- `stalled` 的识别依赖各家对话记录 / API 的内部格式（Claude 的 `isApiErrorMessage`、Codex 的 `task_complete.error` 和 `<content_filter_guidance>`、opencode 2 的 `retry` / `error`），它们改格式后要跟着更新；「长时间没有输出」只是超时推断，跑得很久又不写对话记录的命令也会被报出来。
 - Codex 文档只说 SubagentStart/Stop 带 `agent_id`；如果它自己的子 agent 的其他事件不带，这些事件会影响父 agent 的状态。
 - 读写依赖 Claude / Codex 对话记录的内部格式，升级后用 e2e 测试回归。
 - dsh 的上报依赖 dsh 和 deepseek-harness-tui 尚未稳定的内部接口（`tui/submit`、`tuiChat.agent`、`session/event` 的事件类型），两者升级后用 `AM_E2E_KINDS=dsh` 的 e2e 回归。dsh 的提问面板只能人在它的会话里回答，`am approve` / `am deny` 会拒绝；审批只支持单次（没有 `--always`）。`--model` 会整体替换 profile 里 `agent-default-model` 那一行的 config。
 
 ## am-router：常驻的派活会话
 
-建在 am 之上的一层，参考 DeepSeek Super-agent 的 router–worker 设计：起一个常驻的 agent 会话，你只跟它说话；它把每个请求原样交给一个 worker（用 am 启动），在后台等 worker 做完，再把结果或需要你决定的事告诉你，开头一行 `Q: 简短标题` 标明对应你的哪个请求。它自己不看代码、不拆任务，也不替你批准。
+建在 am 之上的一层，参考 DeepSeek Super-agent 的 router–worker 设计：起一个常驻的 agent 会话，你只跟它说话；它把每个请求原样交给一个 worker（用 am 启动），在后台等 worker 做完，再把结果或需要你决定的事告诉你，开头一行 `Q: 简短标题` 标明对应你的哪个请求。它自己不看代码、不拆任务，也不替你批准。在办的事记在台账文件里，不靠 router 自己的上下文。
 
 ```sh
 cd ~/code/my-app
@@ -164,10 +238,22 @@ am stop router
 | `[name]` | 会话名，默认 `router`；可以同时开多个 |
 | `--kind` / `--model` | router 自己用的 agent 和模型（默认 claude）。它只派活，可以用便宜的模型 |
 | `--project DIR` | worker 默认的工作目录（默认当前目录）；对话里也可以指定别的目录 |
-| `--worker-kind` | worker 默认用的 agent（默认 claude）；对话里也可以指定 |
+| `--worker-kind` | worker 默认用的 agent（默认 claude）；本机有同名预设时用预设；对话里也可以指定别的预设或 kind |
+| `--contract FILE` | worker 合同（默认 `~/.config/agent-master/worker-contract.md`，存在才用） |
 | `-- 原生参数` | 传给 router 自己的 agent |
 
 router 怎么知道自己的角色：`am-router start` 在 `~/.local/state/agent-master/router/<name>/` 写入内容相同的 `CLAUDE.md` 和 `AGENTS.md`（正文是 `packages/router/ROUTER.md`），再用 `am start <name> --cwd` 在这个目录启动。规则以项目说明文件的形式存在，各家 agent 都会加载，上下文压缩后也还在；目录里没有代码，它也就没有代码可看。同一目录下的 `.claude/settings.json` 放行它派活用的 am 子命令，`am approve`、`deny`、`keys`、`open` 仍然每次都问你。不过 Claude 的 router 默认带 `--dangerously-skip-permissions` 启动，不弹权限确认，这份放行清单只在你自己指定权限模式时起作用，例如 `am-router start -- --permission-mode default`。每次 start 都会重写这些文件，所以 router 还在运行时 start 会被拒绝。
+
+**台账**：router 的目录里有一份 `LEDGER.md`，每件在办的事一段：标题（就是 `Q:` 那行）、负责的 worker（名字、预设或 kind、会话 ID、目录）、状态、在等谁、下一步。规则写在 `packages/router/ROUTER.md` 里：
+
+- router 在派活、收到结果、worker 卡住或需要决定、你做出决定、任务关闭时，当轮就更新台账，再回复你。
+- 在办最多 4 件；第 5 件进来时，它会问你是排队，还是把哪一件先放一边（放一边的 worker 会被 `am stop`，记成 `paused`，之后 `am resume` 接回原会话）。
+- 交付结果不等于结束：只有你明确说某件事结束了，它才 `am stop` 那个 worker、把它从台账里删掉。空出位置后自动开始最早排队的那件。
+- 台账只在第一次启动时创建，之后从不覆盖。
+
+**换新 router**：上下文压缩多了就换一个新会话，`am-router restart [name]` 会停掉旧的、用当初 `am-router start` 的参数（存在 router 目录的 `router.json` 里，不带 `--resume`）起一个新的。新 router 启动时只要台账里有事，`am-router` 就先发一句 `Take over from LEDGER.md.`：它读台账、`am list`，把没在运行的 worker `am resume` 回来，给还在干活的 worker 重新挂上后台 `am wait`，再用几行告诉你手上有哪些事。要在你自己的终端里运行 `restart`，不要在 router 的会话里运行（会把自己关掉）。
+
+**合同**：`am-router start` 把合同路径作为 `AM_CONTRACT` 放进 router 所在 pane 的环境，router 用 `am start` 起的每个 worker 因此都带上合同；router 自己不带。router 不再自己往任务里加约束。
 
 - 第一次启动会停在 Claude 的目录信任确认上，另开终端 `am open router` 确认一次即可。
 - 后台等待依赖「后台命令结束时唤醒 agent」，目前只在 Claude Code 上验证过。用其他 agent 当 router 时，它派完活不会等待，你下次说话时它再查进度。
@@ -205,6 +291,7 @@ pnpm test            # 单元测试（含真实 tmux、真实 hook 脚本）
 pnpm typecheck
 pnpm test:e2e        # 真实 agent，花少量模型额度：
                      #   agent：AM_E2E_KINDS=claude,codex,opencode（dsh 装好后可加上）；AM_E2E_LEAD=1 再跑「主 agent 被 /am 唤起后派活」
+                     #   e2e 里 am 的持久记录写到 AM_STATE_DIR（测试目录下），不碰你自己的
                      #   router：AM_E2E_ROUTER=1 跑「router 派活给 worker、后台等待、被唤醒后汇报」
                      #   shell-ask：需要 Docker，起 remote-sim 容器
 pnpm sim:up / sim:down

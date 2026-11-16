@@ -11,28 +11,26 @@ import { parseLedger, parseWorker } from "../src/importer.ts";
 
 const bin = resolve(import.meta.dirname, "../bin/am-ledger");
 
-test("the in-progress limit holds: add and start refuse past it, queue and pause do not count", () => {
+test("nothing caps the tasks in progress; queue and pause are there when the user wants them", () => {
   const db = openLedger(":memory:");
-  for (const title of ["a", "b", "c", "d"]) addTask(db, "router", { title }, { limit: 4 });
-  assert.throws(() => addTask(db, "router", { title: "e" }, { limit: 4 }), /already has 4 tasks in progress \(the limit is 4\): #1 a; #2 b; #3 c; #4 d\. Ask the user/);
-  const queued = addTask(db, "router", { title: "e", note: "the user's words" }, { queue: true, limit: 4 });
+  for (const title of ["a", "b", "c", "d", "e"]) assert.equal(addTask(db, "router", { title }).status, "active");
+  const queued = addTask(db, "router", { title: "f", note: "the user's words" }, { queue: true });
   assert.equal(queued.status, "queued");
-  assert.throws(() => setStatus(db, queued.id, "active", 4), /limit is 4/);
-  setStatus(db, 2, "paused", 4);
-  assert.equal(setStatus(db, queued.id, "active", 4).status, "active", "a paused task frees its slot");
-  assert.equal(addTask(db, "other", { title: "x" }, { limit: 4 }).status, "active", "each router has its own limit");
+  setStatus(db, 2, "paused");
+  assert.equal(setStatus(db, queued.id, "active").status, "active");
+  assert.equal(addTask(db, "other", { title: "x" }).status, "active", "each router has its own ledger");
 
   const closed = closeTask(db, 1, "user said done");
   assert.equal(closed.status, "closed");
   assert.match(closed.notes, /user said done/);
   assert.throws(() => updateTask(db, 1, { next: "x" }), /closed/);
-  assert.deepEqual(listTasks(db, "router").map((t) => `${t.id}:${t.status}`), ["3:active", "4:active", "5:active", "2:paused"]);
-  assert.equal(listTasks(db, "router", true).length, 5);
+  assert.deepEqual(listTasks(db, "router").map((t) => `${t.id}:${t.status}`), ["3:active", "4:active", "5:active", "6:active", "2:paused"]);
+  assert.equal(listTasks(db, "router", true).length, 6);
 });
 
 test("a task's worker fields are reset when another worker takes over, and notes accumulate", () => {
   const db = openLedger(":memory:");
-  const task = addTask(db, "router", { title: "t", worker: "w1", worker_kind: "claude", worker_session: "s1", note: "first" }, { limit: 4 });
+  const task = addTask(db, "router", { title: "t", worker: "w1", worker_kind: "claude", worker_session: "s1", note: "first" });
   const moved = updateTask(db, task.id, { worker: "w2", note: "second" });
   assert.deepEqual([moved.worker, moved.worker_kind, moved.worker_session, moved.notes], ["w2", "", "", "first\nsecond"]);
   assert.equal(updateTask(db, task.id, { waiting: "the user: pick one" }).worker, "w2");
@@ -54,12 +52,13 @@ test("watchers' entries are for review only: merged by matter, gone once read, a
   markRead(db, "chat", ["200"]);
   assert.equal(addEntry(db, "router", "chat", { priority: "low", title: "notice", items: ["200"] }).status, "read");
 
-  // Entries take no slot; taking one makes a task, and the limit applies then.
-  for (const title of ["a", "b", "c", "d"]) addTask(db, "router", { title }, { limit: 4 });
+  // Taking one makes it a task: in progress, or queued when the user says so.
+  for (const title of ["a", "b", "c", "d"]) addTask(db, "router", { title });
   const wanted = addEntry(db, "router", "chat", { priority: "normal", title: "看下这个 PR", who: "李四", where: "前端群", items: ["300"] });
-  assert.throws(() => takeEntry(db, wanted.id, { limit: 4 }), /queue i\d+ or which one to set aside/);
-  const task = takeEntry(db, wanted.id, { queue: true, limit: 4 });
-  assert.deepEqual([task.status, task.origin, task.title], ["queued", `inbox:i${wanted.id}`, "看下这个 PR"]);
+  const task = takeEntry(db, wanted.id);
+  assert.deepEqual([task.status, task.origin, task.title], ["active", `inbox:i${wanted.id}`, "看下这个 PR"]);
+  const later = addEntry(db, "router", "chat", { priority: "low", title: "下周再看", items: ["301"] });
+  assert.equal(takeEntry(db, later.id, { queue: true }).status, "queued");
   assert.match(task.notes, /From chat: 李四 \(前端群\): 看下这个 PR \[items: 300\]/);
   assert.equal(listEntries(db, "router", true).find((e) => e.id === wanted.id)?.status, "taken");
 });
@@ -125,6 +124,7 @@ esac
   );
   await chmod(fakeAm, 0o755);
   await mkdir(join(dir, "config", "agent-master"), { recursive: true });
+  // An old am.json may still name a limit; nothing reads it any more.
   await writeFile(join(dir, "config", "agent-master", "am.json"), JSON.stringify({ ledger: { maxActive: 2 } }));
   const env = { ...process.env, AM_BIN: fakeAm, AM_LEDGER_DB: join(dir, "ledger.db"), XDG_CONFIG_HOME: join(dir, "config"), AM_ROUTER: "", AM_WATCHER: "" };
   const run = (args: string[], options: { input?: string; env?: Record<string, string> } = {}) =>
@@ -142,21 +142,21 @@ test("am ledger: the router writes title, who it waits on and the next step; am 
   const task = JSON.parse(added.stdout);
   assert.deepEqual([task.worker_kind, task.worker_profile, task.worker_session, task.worker_cwd], ["claude", "claude", "0199-live", "/work/app"]);
   assert.equal((await run(["add", "旧方案", "--worker", "old-one"])).code, 0);
-  const full = await run(["add", "第三件"]);
-  assert.equal(full.code, 1);
-  assert.match(full.stderr, /already has 2 tasks in progress \(the limit is 2\)/, "the limit comes from am.json");
-  assert.match((await run(["add", "第三件", "--queue"])).stdout, /added #3 第三件 \(queued\)/);
+  const third = await run(["add", "第三件"]);
+  assert.equal(third.code, 0, "no limit, not even the one an old am.json names");
+  assert.match(third.stdout, /added #3 第三件/);
+  assert.match((await run(["add", "第四件", "--queue"])).stdout, /added #4 第四件 \(queued\)/);
   assert.match((await run(["add", "x", "--worker", "nobody-knows"])).stderr, /am knows no agent named nobody-knows/);
 
   const show = (await run(["show"])).stdout;
-  assert.match(show, /^# Ledger: router\n\nUpdated: .* · 2\/2 in progress · 1 queued · 0 for review/);
+  assert.match(show, /^# Ledger: router\n\nUpdated: .* · 4 in progress · 1 queued · 0 for review/);
   assert.match(show, /### #1 修登录\n- Worker: fix-login \(profile claude, conversation 0199-live\) in \/work\/app — working\n- Waiting on: the worker\n- Next: 汇报后转告用户/);
   assert.match(show, /### #2 旧方案\n- Worker: old-one \(codex, conversation 0198-saved\) in \/work\/old — stopped/, "a stopped worker comes from am's saved record");
   assert.match((await run(["list"])).stdout, /#1\s+active\s+修登录\s+fix-login \(working\)\s+the worker/);
 
   assert.match((await run(["pause", "#2"])).stdout, /paused #2 旧方案/);
   const closed = await run(["close", "1", "--note", "user: done"]);
-  assert.match(closed.stdout, /closed #1 修登录\nits worker fix-login is still working: stop it with am stop fix-login\noldest in the queue: #2 旧方案/);
+  assert.equal(closed.stdout, "closed #1 修登录\nits worker fix-login is still working: stop it with am stop fix-login\n", "no nudge to start what the user queued");
   assert.equal((await run(["list", "--router", "other"])).stdout.trim(), "no tasks", "ledgers are per router");
   assert.equal((await run(["list"], { env: { AM_ROUTER: "other" } })).stdout.trim(), "no tasks", "$AM_ROUTER picks the ledger");
 });
@@ -206,9 +206,9 @@ test("am ledger help needs no database", async () => {
   assert.match(help.stdout, /^am ledger — /);
 });
 
-test("concurrent adds from several processes never pass the limit", async () => {
+test("concurrent adds from several processes all land, each with its own id", async () => {
   const { run } = await setup();
-  const results = await Promise.all(Array.from({ length: 6 }, (_, i) => run(["add", `t${i}`])));
-  assert.equal(results.filter((r) => r.code === 0).length, 2);
-  assert.equal(results.filter((r) => /limit is 2/.test(r.stderr)).length, 4);
+  const results = await Promise.all(Array.from({ length: 6 }, (_, i) => run(["add", `t${i}`, "--json"])));
+  assert.deepEqual(results.map((r) => r.code), [0, 0, 0, 0, 0, 0], results.map((r) => r.stderr).join(""));
+  assert.deepEqual(results.map((r) => JSON.parse(r.stdout).id).sort(), [1, 2, 3, 4, 5, 6]);
 });

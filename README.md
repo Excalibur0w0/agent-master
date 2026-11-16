@@ -256,8 +256,8 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 **台账**：在办的事记在 `am ledger`（SQLite，见下文），不在 router 的上下文里。router 每件事只写标题（就是 `Q:` 那行）、在等谁、下一步，worker 的 kind、预设、会话 ID 和运行状态由 am 带出。规则写在 `packages/router/ROUTER.md` 里：
 
 - router 在派活、收到结果、worker 卡住或需要决定、你做出决定、任务关闭时，当轮就更新台账，再回复你。
-- 在办最多 4 件，由 `am ledger add` / `start` 强制：第 5 件会被拒绝，router 就问你是排队，还是把哪一件先放一边（`am ledger pause`，并 `am stop` 它的 worker，之后 `am resume` 接回原会话）。
-- 交付结果不等于结束：只有你明确说某件事结束了，它才 `am ledger close`、`am stop` 那个 worker。空出位置后开始最早排队的那件。
+- 在办几件不设上限：新请求直接开始。排队（`--queue`）、先放一边（`am ledger pause`，并 `am stop` 它的 worker，之后 `am resume` 接回原会话）、重新开始（`am ledger start`）都只在你说的时候做。
+- 交付结果不等于结束：只有你明确说某件事结束了，它才 `am ledger close`、`am stop` 那个 worker。
 - 以前的 router 把台账写在自己目录的 `LEDGER.md` 里。`am router start` / `restart` 时如果还有这个文件，会先把它导入数据库（这时旧 router 已经停了，文件是最新的），再改名成 `LEDGER.md.imported-<日期>`，只导一次；导入失败就不启动，文件原样留着。
 
 **换新 router**：上下文压缩多了就换一个新会话，`am router restart [name]` 会停掉旧的、用当初 `am router start` 的参数（存在 router 目录的 `router.json` 里，不带 `--resume`）起一个新的。新 router 启动时只要台账里有事，`am router` 就先发一句 `Take over: your ledger lists work in flight (am ledger show).`：它看台账、`am list`，把没在运行的 worker `am resume` 回来，给还在干活的 worker 重新挂上后台 `am wait`，再用几行告诉你手上有哪些事。要在你自己的终端里运行 `restart`，不要在 router 的会话里运行（会把自己关掉）。
@@ -275,7 +275,7 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 
 ## am watcher：常驻、只读地盯消息
 
-盯一个消息来源（比如聊天工具里 @我 的消息和私聊），挑出需要你处理的，分优先级写进台账的「待过目」（`am ledger inbox`）。这些不是任务，不占在办名额；你说要处理哪条，router 才用 `am ledger inbox take` 把它转成在办事项。分两部分，大模型不轮询：
+盯一个消息来源（比如聊天工具里 @我 的消息和私聊），挑出需要你处理的，分优先级写进台账的「待过目」（`am ledger inbox`）。这些不是任务；你说要处理哪条，router 才用 `am ledger inbox take` 把它转成在办事项。分两部分，大模型不轮询：
 
 - **feed loop**（tmux 会话 `am-<name>-feed`，不调用模型）：运行来源提供的 poller（轮询脚本）。poller 只在可能有变化时打印一行 `{"pending":[{"id":…},…]}`（当前所有待处理的全量），循环自己算出哪些是新的、哪些你已经在别处读过，按 id 去重，记在 `state.json` 里（重启不重发、不漏）。watcher 空闲时，循环用 `am prompt` 把新条目（每次最多 `batch` 条，默认 20）交给它；你在别处读过的，循环直接告诉台账（`am ledger inbox read`），不用叫醒 Claude。
 - **watcher**（am agent `<name>`，Claude）：被叫醒后读规则、分优先级（紧急 / 一般 / 不重要）、需要时读上下文，同一件事合并成一条，用 `am ledger inbox add/update` 写进台账（字段走 stdin 的 JSON，消息里的文字不会进命令行）。你在它的会话里（`am open <name>`）纠正它的判断，它会改条目并把规则记进 `desk/RULES.md`，以后照着分。看结果：`am ledger show` 的「For review」，或 `am ledger inbox list`。
@@ -336,12 +336,12 @@ am ledger add "修登录" --worker fix-login --waiting "the worker" --next "汇�
 am ledger update 3 --waiting "the user: 选方案" --note "worker 给了两个方案"
 am ledger pause 3 / am ledger start 3 / am ledger close 3
 am ledger inbox list              # 待过目
-am ledger inbox take i7           # 你要处理这条：转成在办事项（受上限约束；--queue 排队）
+am ledger inbox take i7           # 你要处理这条：转成在办事项（--queue 排队）
 am ledger inbox dismiss i7        # 不用管
 ```
 
 - 任务：router 只写标题、在等谁（`--waiting`）、下一步（`--next`），可选备注（`--note`，追加一行）。`--worker` 只给名字，kind、预设、会话 ID、目录由 am 填，`show` / `list` 时再从 am 取实时状态（不在运行的从 `am list --saved` 取 stopped / lost / exited），会话 ID 变了会写回。
-- 上限：在办最多 4 件，在 `am.json` 里用 `"ledger": {"maxActive": N}` 改。检查和写入在同一个写事务里，几个进程同时 add 也不会超。
+- 在办不设上限；排队、暂停留给你自己决定用不用。（早先版本的 `"ledger": {"maxActive": N}` 已不再读取。）
 - 待过目：watcher 用 `am ledger inbox add - <<'EOF' {json} EOF` 写，字段 `priority`（urgent / normal / low）、`title`、`who`、`where`、`at`、`why`、`items`（来源的消息 id，一条消息只能属于一个条目）。一个条目的消息你都在别处读过了，它就自动离开列表；你没管、它还在的，就留在「For review」里。
 - `am ledger import <LEDGER.md>`：把旧的 markdown 台账导进来（`am router start` 会自动做一次），标题重复的跳过；额外的行（Done so far、Reports 等）和旧的 Status 都进备注，不丢内容。
 

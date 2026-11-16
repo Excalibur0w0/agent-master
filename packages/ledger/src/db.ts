@@ -1,7 +1,8 @@
 // The ledger: work in flight for each router (tasks), and the messages watchers
-// put up for the user's review (inbox entries, which are not tasks and take no
-// slot). One SQLite file shared by the router, the watchers and the user.
-import { mkdirSync, readFileSync } from "node:fs";
+// put up for the user's review (inbox entries, which are not tasks). One SQLite
+// file shared by the router, the watchers and the user. How many tasks are in
+// progress at once is the user's call: nothing here caps it.
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,19 +17,6 @@ export class LedgerError extends Error {
 
 export function ledgerPath(): string {
   return process.env.AM_LEDGER_DB || join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "agent-master", "ledger.db");
-}
-
-export const DEFAULT_MAX_ACTIVE = 4;
-
-/** "ledger": { "maxActive": N } in the user's am.json. */
-export function maxActive(): number {
-  try {
-    const path = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "agent-master", "am.json");
-    const value = JSON.parse(readFileSync(path, "utf8"))?.ledger?.maxActive;
-    return Number.isInteger(value) && value > 0 ? value : DEFAULT_MAX_ACTIVE;
-  } catch {
-    return DEFAULT_MAX_ACTIVE;
-  }
 }
 
 const SCHEMA = `
@@ -163,25 +151,13 @@ export function listTasks(db: DatabaseSync, router: string, all = false): Task[]
   return db.prepare(`SELECT * FROM tasks WHERE router = ? ${all ? "" : "AND status <> 'closed'"} ${order}`).all(router) as unknown as Task[];
 }
 
-function assertRoom(db: DatabaseSync, router: string, limit: number, what: string): void {
-  const active = activeTasks(db, router);
-  if (active.length >= limit) {
-    const list = active.map((t) => `#${t.id} ${t.title}`).join("; ");
-    throw new LedgerError(
-      "ledger_full",
-      `${router} already has ${active.length} tasks in progress (the limit is ${limit}): ${list}. Ask the user whether to queue ${what} or which one to set aside (am ledger pause <id>)`,
-    );
-  }
-}
-
 function withNote(notes: string, note: string | undefined): string {
   if (!note) return notes;
   return notes ? `${notes}\n${note}` : note;
 }
 
-export function addTask(db: DatabaseSync, router: string, fields: TaskFields & { title: string }, options: { queue?: boolean; limit?: number } = {}): Task {
+export function addTask(db: DatabaseSync, router: string, fields: TaskFields & { title: string }, options: { queue?: boolean } = {}): Task {
   return transaction(db, () => {
-    if (!options.queue) assertRoom(db, router, options.limit ?? maxActive(), "it");
     const at = now();
     const result = db
       .prepare(
@@ -219,12 +195,11 @@ export function updateTask(db: DatabaseSync, id: number, fields: TaskFields): Ta
   });
 }
 
-/** Moves a task between in progress, queued and paused; going in progress respects the limit. */
-export function setStatus(db: DatabaseSync, id: number, status: Exclude<TaskStatus, "closed">, limit = maxActive()): Task {
+/** Moves a task between in progress, queued and paused. */
+export function setStatus(db: DatabaseSync, id: number, status: Exclude<TaskStatus, "closed">): Task {
   return transaction(db, () => {
     const task = getTask(db, id);
     if (task.status === "closed") throw new LedgerError("closed", `task #${id} is closed`);
-    if (status === "active" && task.status !== "active") assertRoom(db, task.router, limit, `#${id}`);
     db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(status, now(), id);
     return getTask(db, id);
   });
@@ -384,12 +359,11 @@ export function dismissEntry(db: DatabaseSync, id: number): Entry {
   return getEntry(db, id);
 }
 
-/** The user wants an entry handled: it becomes a task (in progress unless queued; the limit applies). */
-export function takeEntry(db: DatabaseSync, id: number, options: { title?: string; queue?: boolean; limit?: number } = {}): Task {
+/** The user wants an entry handled: it becomes a task (in progress unless queued). */
+export function takeEntry(db: DatabaseSync, id: number, options: { title?: string; queue?: boolean } = {}): Task {
   return transaction(db, () => {
     const entry = getEntry(db, id);
     if (entry.status === "taken") throw new LedgerError("not_open", `entry i${id} is already task #${entry.task_id}`);
-    if (!options.queue) assertRoom(db, entry.router, options.limit ?? maxActive(), `i${id}`);
     const source = [entry.who, entry.place && `(${entry.place})`, entry.at].filter(Boolean).join(" ");
     const at = now();
     const result = db

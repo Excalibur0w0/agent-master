@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import {
-  activeTasks,
   addEntry,
   addTask,
   closeTask,
@@ -14,7 +13,6 @@ import {
   listEntries,
   listTasks,
   markRead,
-  maxActive,
   openLedger,
   refreshWorker,
   setStatus,
@@ -36,17 +34,16 @@ const USAGE = `am ledger — the router's ledger of work in flight, and the mess
                                          state, and the messages waiting for the user's review
   am ledger list [--all]                 Tasks, one line each (--all: closed ones too)
   am ledger add <title> [--worker NAME] [--waiting TEXT] [--next TEXT] [--note TEXT] [--queue]
-                                         A task in progress; refused once the router has maxActive (default 4) in
-                                         progress: ask the user, then --queue it or pause one. The worker's kind,
-                                         profile, conversation id and state come from am
+                                         A task in progress (--queue: waiting in the queue, if the user wants it
+                                         there). The worker's kind, profile, conversation id and state come from am
   am ledger update <id> [--title T] [--worker NAME] [--waiting TEXT] [--next TEXT] [--note TEXT]
                                          --note adds a line to the task's notes
-  am ledger pause <id>                   Set a task aside (it waits in the queue and frees its slot)
-  am ledger start <id>                   Take a queued or paused task in progress (the limit applies)
+  am ledger pause <id>                   Set a task aside (it waits in the queue)
+  am ledger start <id>                   Take a queued or paused task in progress
   am ledger close <id> [--note TEXT]     Only when the user says the task is finished
   am ledger import <LEDGER.md>           Bring tasks over from a markdown ledger (am router start does it once)
 
-  am ledger inbox list [--all]           Messages watchers put up for review: not tasks, no slot taken
+  am ledger inbox list [--all]           Messages watchers put up for review: not tasks
   am ledger inbox add - | --priority P --title T --item ID... [--who W] [--where X] [--at TIME] [--why TEXT]
                                          A watcher records one matter (urgent | normal | low); "-" reads the same
                                          fields as JSON on stdin: {"priority", "title", "who", "where", "at", "why", "items"}
@@ -55,11 +52,12 @@ const USAGE = `am ledger — the router's ledger of work in flight, and the mess
   am ledger inbox read --item ID...      The user read these items elsewhere; an entry whose items are all read leaves
   am ledger inbox dismiss <n>            The user does not need it
   am ledger inbox take <n> [--title T] [--queue]
-                                         The user wants it handled: it becomes a task (the limit applies)
+                                         The user wants it handled: it becomes a task (--queue: a queued one)
 
   Every command takes --router NAME (default: $AM_ROUTER, else router) and --json; inbox commands take
   --watcher NAME (default: $AM_WATCHER). Ids: tasks #3 or 3, entries i7 or 7.
-  Database: ${ledgerPath()} (AM_LEDGER_DB); limit: "ledger": { "maxActive": N } in am.json`;
+  How many tasks are in progress at once is up to the user: nothing caps it; queue and pause only when they say.
+  Database: ${ledgerPath()} (AM_LEDGER_DB)`;
 
 const id = (text: string | undefined, prefix: string, what: string): number => {
   const match = text ? new RegExp(`^${prefix}?(\\d+)$`).exec(text) : null;
@@ -205,7 +203,7 @@ async function main(argv: string[]): Promise<number> {
   switch (command) {
     case "show": {
       const tasks = listTasks(db, router);
-      out({ tasks, inbox: listEntries(db, router) }, renderLedger(router, tasks, listEntries(db, router), infoFor(tasks), maxActive()).trimEnd());
+      out({ tasks, inbox: listEntries(db, router) }, renderLedger(router, tasks, listEntries(db, router), infoFor(tasks)).trimEnd());
       return 0;
     }
     case "list": {
@@ -250,12 +248,7 @@ async function main(argv: string[]): Promise<number> {
     case "close": {
       const task = closeTask(db, id(positionals[0], "#", "close"), values.note);
       const running = stillRunning(task);
-      const queued = listTasks(db, router).filter((t) => t.status !== "active")[0];
-      const hints = [
-        running ? `its worker ${task.worker} is still ${running.state}: stop it with am stop ${task.worker}` : "",
-        queued && activeTasks(db, router).length < maxActive() ? `oldest in the queue: ${describe(queued)}; start it with am ledger start ${queued.id}` : "",
-      ].filter(Boolean);
-      out(task, [`closed #${task.id} ${task.title}`, ...hints].join("\n"));
+      out(task, [`closed #${task.id} ${task.title}`, ...(running ? [`its worker ${task.worker} is still ${running.state}: stop it with am stop ${task.worker}`] : [])].join("\n"));
       return 0;
     }
     case "import": {
@@ -286,7 +279,6 @@ async function main(argv: string[]): Promise<number> {
         [
           `imported ${imported.length} task(s) into ${router}'s ledger from ${file}: ${active} in progress, ${imported.length - active} queued or paused`,
           ...skipped.map((title) => `skipped (already in the ledger): ${title}`),
-          ...(activeTasks(db, router).length > maxActive() ? [`note: ${activeTasks(db, router).length} tasks are in progress, over the limit of ${maxActive()}; pause some`] : []),
         ].join("\n"),
       );
       return 0;

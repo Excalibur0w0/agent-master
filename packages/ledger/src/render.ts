@@ -32,13 +32,13 @@ function entryLine(entry: Entry): string {
   return `- i${entry.id} ${from}${from ? ": " : ""}${entry.title}${entry.why ? `. Why: ${entry.why}` : ""} [${entry.watcher}: ${entry.items.join(", ")}]`;
 }
 
-export function renderLedger(router: string, tasks: Task[], entries: Entry[], info: (task: Task) => WorkerInfo | undefined, limit: number, now = Date.now()): string {
+export function renderLedger(router: string, tasks: Task[], entries: Entry[], info: (task: Task) => WorkerInfo | undefined, now = Date.now()): string {
   const active = tasks.filter((t) => t.status === "active");
   const waiting = tasks.filter((t) => t.status === "queued" || t.status === "paused");
   const out = [
     `# Ledger: ${router}`,
     "",
-    `Updated: ${localTime(now)} · ${active.length}/${limit} in progress · ${waiting.length} queued · ${entries.length} for review`,
+    `Updated: ${localTime(now)} · ${active.length} in progress · ${waiting.length} queued · ${entries.length} for review`,
     "",
     "## In progress",
     "",

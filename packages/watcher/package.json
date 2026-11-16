@@ -11,6 +11,10 @@
   "am": {
     "commands": {
       "watcher": "bin/am-watcher"
-    }
+    },
+    "afterResumeAll": [
+      "watcher",
+      "resume"
+    ]
   }
 }

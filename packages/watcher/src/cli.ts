@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { loadState } from "./feed.ts";
-import { agentArgs, configPath, deskDir, loadWatchers, logFile, pick, routerOf, rulesFile, stateFile, UsageError, watcherDir, writeHome } from "./home.ts";
+import { agentArgs, configPath, deskDir, loadWatchers, logFile, pick, routerOf, rulesFile, stateFile, UsageError, watcherDir, writeHome, type WatcherConfig } from "./home.ts";
 import { run, withoutContract } from "./run.ts";
 
 const USAGE = `am watcher — a long-running Claude session that watches a message source and puts what needs you up for
@@ -17,6 +17,10 @@ review in the ledger (am ledger show, "For review"; am ledger inbox)
   am watcher stop [name]   Stop both; its entries, rules and state stay for the next start
   am watcher status [name] Its Claude session and feed loop, what is pending or queued, what is up for review
   am watcher list          The watchers configured in your am.json
+  am watcher resume        Bring back the watchers that were running when their tmux server went away (reboot,
+                             crash); am resume --all runs this once it has resumed the agents. A watcher stopped
+                             with am watcher stop stays stopped. Not started at login: after a reboot, run
+                             am resume --all (or am watcher start)
   am watcher run <name>    The feed loop itself (what start runs in tmux): runs the source's poller, and wakes the
                              watcher through am prompt when it is idle and new items are queued
 
@@ -56,15 +60,9 @@ function startFeed(name: string): void {
   if (created.status !== 0) throw new Error(`could not start the feed loop: ${created.stderr.trim()}`);
 }
 
-async function start(name: string | undefined): Promise<number> {
-  const [chosen, config] = pick(await loadWatchers(), name);
+/** Starts whichever of the watcher's two parts is not running; false when its Claude session did not start. */
+async function bringUp(chosen: string, config: WatcherConfig, agent = agentState(chosen)): Promise<boolean> {
   await writeHome(chosen, config);
-  const agent = agentState(chosen);
-  const feed = feeding(chosen);
-  if (agent && feed) {
-    process.stdout.write(`${chosen} is already running (${agent.state}); see am watcher status ${chosen}\n`);
-    return 0;
-  }
   if (!agent) {
     const started = am(
       [
@@ -81,10 +79,21 @@ async function start(name: string | undefined): Promise<number> {
     );
     if (started.status !== 0) {
       process.stderr.write(`am watcher: ${chosen}'s Claude session did not start; fix that (am open ${chosen} if it waits for you), then run am watcher start ${chosen} again\n`);
-      return started.status ?? 1;
+      return false;
     }
   }
-  if (!feed) startFeed(chosen);
+  if (!feeding(chosen)) startFeed(chosen);
+  return true;
+}
+
+async function start(name: string | undefined): Promise<number> {
+  const [chosen, config] = pick(await loadWatchers(), name);
+  const agent = agentState(chosen);
+  if (agent && feeding(chosen)) {
+    process.stdout.write(`${chosen} is already running (${agent.state}); see am watcher status ${chosen}\n`);
+    return 0;
+  }
+  if (!(await bringUp(chosen, config, agent))) return 1;
   process.stdout.write(
     [
       `${chosen} is running: Claude session am-${chosen} (am open ${chosen}), feed loop ${feedSession(chosen)}`,
@@ -93,6 +102,33 @@ async function start(name: string | undefined): Promise<number> {
     ].join("\n") + "\n",
   );
   return 0;
+}
+
+/**
+ * After am resume --all: brings back each watcher that was running when its tmux server went away. am has
+ * resumed its Claude session by then (or found it lost, when it had no conversation yet); its feed loop is
+ * a plain tmux session, and starts here. A watcher stopped with am watcher stop stays stopped.
+ */
+async function resume(): Promise<number> {
+  const watchers = await loadWatchers();
+  if (!Object.keys(watchers).length) return 0;
+  const saved = am(["list", "--saved", "--json"]);
+  let lost = new Set<string>();
+  try {
+    lost = new Set((JSON.parse(saved.stdout) as Array<{ name: string; status: string }>).filter((a) => a.status === "lost").map((a) => a.name));
+  } catch {}
+  let failed = false;
+  for (const [name, config] of Object.entries(watchers)) {
+    if (feeding(name)) continue;
+    const agent = agentState(name);
+    if (!agent && !lost.has(name)) continue;
+    if (!(await bringUp(name, config, agent))) {
+      failed = true;
+      continue;
+    }
+    process.stdout.write(`watcher ${name}: feed loop ${feedSession(name)} started again${agent ? "" : `; its Claude session too, on a new conversation (am had none to resume)`}\n`);
+  }
+  return failed ? 1 : 0;
 }
 
 async function stop(name: string | undefined): Promise<number> {
@@ -160,6 +196,9 @@ async function main([command, ...rest]: string[]): Promise<number> {
       return status(name);
     case "list":
       return list();
+    case "resume":
+      if (name) throw new UsageError("am watcher resume takes no name: it brings back every watcher that was running");
+      return resume();
     case "run": {
       if (!name) throw new UsageError("am watcher run needs the watcher's name");
       const [chosen, config] = pick(await loadWatchers(), name);

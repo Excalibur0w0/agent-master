@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -103,6 +103,7 @@ case "$1" in
   status) [ -f ${dir}/running ] && echo '{"state":"idle","detail":""}' || { echo '{"error":"not_found"}' >&2; exit 1; } ;;
   start) touch ${dir}/running ;;
   stop) rm -f ${dir}/running ;;
+  list) cat ${dir}/saved.json 2>/dev/null || echo '[]' ;;
   prompt) { cat; echo '====='; } >> ${prompts} ;;
   ledger) if [ "$2 $3" = "inbox list" ]; then echo '[{"watcher":"inbox","priority":"urgent"},{"watcher":"other","priority":"low"}]'; fi ;;
 esac
@@ -186,6 +187,29 @@ exec sleep 600
   assert.ok(!feeding());
   assert.ok((await readFile(log, "utf8")).includes("stop inbox|"));
   assert.match((await sub("stop")).stdout, /inbox is not running/);
+
+  // am resume --all runs am watcher resume. One stopped on purpose stays stopped.
+  const starts = async () => (await readFile(log, "utf8")).split("\n").filter((c) => c.startsWith("start inbox ")).length;
+  await writeFile(join(dir, "saved.json"), JSON.stringify([{ name: "inbox", status: "stopped" }]));
+  assert.deepEqual(await sub("resume"), { code: 0, stdout: "", stderr: "" });
+  assert.ok(!feeding());
+  // Its tmux server went away and am resumed its Claude session: the feed loop comes back, the session is not started twice.
+  await writeFile(join(dir, "running"), "");
+  const before = await starts();
+  const resumed = await sub("resume");
+  assert.equal(resumed.code, 0, resumed.stderr);
+  assert.equal(resumed.stdout, "watcher inbox: feed loop am-inbox-feed started again\n");
+  assert.ok(feeding());
+  assert.equal(await starts(), before);
+  assert.equal((await sub("resume")).stdout, "", "nothing to do once it runs");
+  // am could not resume the session (it had no conversation yet): both start.
+  execFileSync("tmux", ["-L", socket, "kill-session", "-t", "=am-inbox-feed"]);
+  await rm(join(dir, "running"));
+  await writeFile(join(dir, "saved.json"), JSON.stringify([{ name: "inbox", status: "lost" }]));
+  assert.match((await sub("resume")).stdout, /^watcher inbox: feed loop am-inbox-feed started again; its Claude session too, on a new conversation/);
+  assert.equal(await starts(), before + 1);
+  assert.ok(feeding());
+  await sub("stop");
 });
 
 test("a poller that cannot start is retried, and the feed loop keeps running", async () => {

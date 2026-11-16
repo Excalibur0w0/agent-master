@@ -64,10 +64,10 @@ am stop reviewer
 | `am read <name>` | 最近一轮的最终回复 |
 | `am approve <name> [--always]` / `am deny <name>` | 处理权限请求（`--always` 仅 opencode） |
 | `am interrupt <name>` / `am keys <name> <key>...` / `am stop <name>` | 中断 / 原始按键 / 关闭（am 仍记得它，可以 resume） |
-| `am resume <name>` / `am resume --all` | 用当初的启动参数重新起来，并接回它原来的会话；`--all` 恢复所有随 tmux 或机器重启丢掉的 agent |
+| `am resume <name>` / `am resume --all` | 用当初的启动参数重新起来，并接回它原来的会话；`--all` 恢复所有随 tmux 或机器重启丢掉的 agent，再拉起 watcher 的 feed loop |
 | `am forget <name>` | 删掉 am 对它的记录 |
 | `am router start\|restart\|stop` | 常驻的派活会话，见下文「am router」 |
-| `am watcher start\|stop\|status\|list` | 常驻、只读地盯消息，见下文「am watcher」 |
+| `am watcher start\|stop\|status\|list\|resume` | 常驻、只读地盯消息，见下文「am watcher」 |
 | `am ledger show\|list\|add\|update\|pause\|start\|close\|inbox …` | router 的台账和待过目消息，见下文「am ledger」 |
 | `am -h` / `am help` | 所有命令的说明，包括 `am router`、`am watcher` |
 
@@ -134,7 +134,8 @@ am 在 `~/.local/state/agent-master/agents/<name>.json`（遵循 `XDG_STATE_HOME
 
 ```sh
 am resume fix-login     # 关掉的（am stop）或丢掉的 agent，用原参数重新起来并接回原会话
-am resume --all         # 重启机器或 tmux 之后：恢复所有随 tmux 丢掉的 agent，不碰你用 am stop 关的和自己退出的
+am resume --all         # 重启机器或 tmux 之后：恢复所有随 tmux 丢掉的 agent，不碰你用 am stop 关的和自己退出的；
+                        # 随后让扩展命令把它们旁边的东西也拉回来（watcher 的 feed loop）
 am list --saved         # 看 am 记得哪些
 ```
 
@@ -269,7 +270,7 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 
 - 第一次启动会停在 Claude 的目录信任确认上，另开终端 `am open router` 确认一次即可。
 - 后台等待依赖「后台命令结束时唤醒 agent」，目前只在 Claude Code 上验证过。用其他 agent 当 router 时，它派完活不会等待，你下次说话时它再查进度。
-- 分层约束：router 只通过 am 的命令行驱动 agent，am 不知道 router 的存在（测试会检查 `packages/agent` 没有引用它）。`am router …` 能用，是因为 router 包在自己的 `package.json` 里声明了 `"am": {"commands": {"router": "bin/am-router"}}`：am 只认这种声明，把命令原样转交（`am watcher` 同理），`am -h` 再调各自的 `help` 拼出完整说明。
+- 分层约束：router 只通过 am 的命令行驱动 agent，am 不知道 router 的存在（测试会检查 `packages/agent` 没有引用它）。`am router …` 能用，是因为 router 包在自己的 `package.json` 里声明了 `"am": {"commands": {"router": "bin/am-router"}}`：am 只认这种声明，把命令原样转交（`am watcher` 同理），`am -h` 再调各自的 `help` 拼出完整说明。包还可以声明 `"afterResumeAll": ["watcher", "resume"]`：`am resume --all` 恢复完 agent 后运行这一步（必须是这个包自己的命令），把不是 agent 的部分也拉回来。
 - 以前的 `am-router` 命令（`~/.local/bin/am-router` 链接）仍然能用，和 `am router` 等价；不需要的话直接删掉那个链接。
 
 ## am watcher：常驻、只读地盯消息
@@ -284,6 +285,8 @@ am watcher start          # 起 Claude 会话和 feed loop（缺哪个起哪个�
 am watcher status         # 会话、feed loop、待处理/排队数、摘要位置、最近日志
 am watcher stop           # 两个都停；摘要、规则和状态留着
 ```
+
+**什么时候起**：只在你运行 `am watcher start` 时起，不跟 router 一起起，开机也不自动起。机器重启或 tmux 被关掉之后，运行 `am resume --all`：am 先把 watcher 的 Claude 会话接回原来的会话，再运行 `am watcher resume` 拉起 feed loop（Claude 会话还没收到过消息、没有会话可接时，就新开一个）。你用 `am watcher stop` 停掉的不会被拉起。只想起 watcher 时，`am watcher start` 也行，它起的是新会话。
 
 **它是只读的**（它处理的是别人写的内容，必须防提示词注入）。am 用这些参数启动它的 Claude，不用你的预设：
 

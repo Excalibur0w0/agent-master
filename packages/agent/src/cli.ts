@@ -17,6 +17,7 @@ import {
   promptAgent,
   readReply,
   resolveStart,
+  settledReply,
   resumeAgent,
   resumeLost,
   savedAgents,
@@ -253,7 +254,7 @@ async function main(argv: string[]): Promise<number> {
       }
       // The wait is what was asked for: a reply that cannot be read is reported, not an error.
       try {
-        const reply = await readReply(tmux, agent.paneId);
+        const reply = await settledReply(() => readReply(tmux, agent.paneId));
         out({ ...agent, reply }, `${line}\n\n${reply || "(no final reply in its latest turn)"}`);
       } catch (error) {
         const readError = error instanceof Error ? error.message : String(error);

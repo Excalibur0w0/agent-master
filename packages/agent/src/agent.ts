@@ -544,6 +544,25 @@ export async function readReply(tmux: Tmux, target: string): Promise<string> {
   return DRIVERS[record.kind].readReply(record);
 }
 
+/** How long a reply read right as a turn ends may take to reach the transcript. */
+const REPLY_SETTLE_MS = 3000;
+
+/**
+ * Reads a reply right after the agent turned idle. The hook that marks the turn
+ * over can run before the agent has written its final message to the transcript
+ * (seen with Claude Code: am wait woke 134 ms after that message was made, read
+ * nothing, and am read found it later), so an empty reply is read again until one
+ * lands or `settleMs` passes; a turn that really ended without one costs that wait.
+ */
+export async function settledReply(read: () => Promise<string>, settleMs = REPLY_SETTLE_MS, interval = 200): Promise<string> {
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const reply = await read();
+    if (reply || Date.now() >= deadline) return reply;
+    await sleep(interval);
+  }
+}
+
 export async function approveAgent(tmux: Tmux, target: string, scope: "once" | "always" = "once"): Promise<void> {
   const record = await findRecord(tmux, target);
   if ((await view(record)).state !== "blocked") throw new AmError("not_blocked", `${record.name} is not waiting for a decision`);

@@ -132,6 +132,8 @@ for (const kind of kinds) {
       assert.equal(after.state, "idle");
       const { reply } = await amOk(["read", name]);
       assert.match(reply, /pong/i);
+      const waited = await amOk(["wait", name, "--read", "--timeout", "30000"]);
+      assert.deepEqual([waited.state, waited.reply], ["idle", reply], "am wait --read carries the same reply");
     });
 
     it("blocks on a permission request, refuses new prompts, then runs once approved", async () => {

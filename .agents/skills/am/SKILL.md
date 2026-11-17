@@ -34,7 +34,7 @@ am stop reviewer                               # when you no longer need it
 | `am start <name> --kind K [--cwd DIR] [--model M] [--bin EXE] [-- native args]` | Launch the agent in tmux session `am-<name>`. Default cwd is yours. `--bin` runs a wrapper that accepts the same arguments as `claude`/`codex` (e.g. a codex launched through a gateway); it must be a command on PATH or a path relative to `--cwd`, not a shell alias. |
 | `am start <name> --profile P [--cwd DIR]` | Launch with one of the user's profiles (`am profiles` lists them); prefer it to hand-written flags. |
 | `am prompt <name> <text\|-> [--wait] [--timeout MS]` | Submit a task (`-` reads stdin). `--wait` returns once it is `idle`, `blocked` or `stalled`. |
-| `am wait <name> [--until idle,blocked,stalled] [--timeout MS]` | Wait for a state. |
+| `am wait <name> [--until idle,blocked,stalled] [--timeout MS] [--read]` | Wait for a state; `--read` also prints the final reply once it is idle. |
 | `am status <name>` / `am list` | Current state; `detail` explains `blocked` (e.g. the command awaiting approval) and `stalled`. |
 | `am read <name>` | Final message of its latest turn. |
 | `am interrupt <name>` | Stop its current turn. |
@@ -51,9 +51,9 @@ States: `starting`, `idle` (ready for input), `working`, `blocked` (waiting for 
 A delegated task can take many minutes. If your tools can run a command in the background and wake you when it exits (Claude Code's Bash tool with `run_in_background` can; a shell `&` cannot), do not wait in the foreground:
 
 1. Send the task without `--wait`. `am prompt` still returns only once the agent has received it.
-2. Run `am wait <name>` in the background, without `--timeout`, one per agent. It ends when the agent is `idle`, `blocked`, `stalled` or `exited`, and prints which.
+2. Run `am wait <name> --read` in the background, without `--timeout`, one per agent. It ends when the agent is `idle`, `blocked`, `stalled` or `exited`, and prints which; when `idle`, the agent's final reply follows.
 3. Tell the user which agents are working, then go on with other work or end your turn. Do not poll `am status` meanwhile.
-4. When it wakes you: `idle` → `am read <name>`; `blocked` → follow the rules below, and once it is answered, run another background `am wait`; `stalled` → tell the user why (`am status <name>`) and do not resend or retry on your own; another `am wait` reports the same stall only once; `exited` → tell the user.
+4. When it wakes you, read what that background command printed: `idle` → the reply is there (`am read <name>` prints it again); `blocked` → follow the rules below, and once it is answered, run another background `am wait`; `stalled` → tell the user why (`am status <name>`) and do not resend or retry on your own; another `am wait` reports the same stall only once; `exited` → tell the user.
 
 Without such a tool, wait with `--wait --timeout` as in the workflow above.
 

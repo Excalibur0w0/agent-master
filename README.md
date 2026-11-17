@@ -60,7 +60,7 @@ am stop reviewer
 | `am list` / `am status <name>` | 状态：`starting` `idle` `working` `blocked` `stalled` `exited` `unknown`；`detail` 说明在等什么、为什么卡住 |
 | `am list --saved` | am 记得的所有 agent：运行中、`stopped`（am stop 关的）、`exited`（自己退出的）、`lost`（随 tmux 或机器重启丢的） |
 | `am prompt <name> <text\|-> [--wait] [--timeout]` | 粘贴 + 回车，并确认对方收到；blocked / working 时拒绝；带合同的 agent 自动附上合同 |
-| `am wait <name> [--until idle,blocked,stalled]` | 等状态；同一次卡住只报一次 |
+| `am wait <name> [--until idle,blocked,stalled] [--read]` | 等状态；同一次卡住只报一次；`--read` 在 idle 时把最终回复一起打出来，省一次 `am read` |
 | `am read <name>` | 最近一轮的最终回复 |
 | `am approve <name> [--always]` / `am deny <name>` | 处理权限请求（`--always` 仅 opencode） |
 | `am interrupt <name>` / `am keys <name> <key>...` / `am stop <name>` | 中断 / 原始按键 / 关闭（am 仍记得它，可以 resume） |

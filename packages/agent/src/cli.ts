@@ -52,8 +52,9 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
   am status <name>                      One agent's state
   am prompt <name> <text|-> [--wait] [--timeout MS]
                                         Send a task (- reads stdin); --wait returns once idle, blocked or stalled
-  am wait <name> [--until idle,blocked,stalled] [--timeout MS]
+  am wait <name> [--until idle,blocked,stalled] [--timeout MS] [--read]
                                         Wait for a state; a stall is reported once, the next wait waits for news
+                                        --read: when it is idle, also print its final reply (what am read prints)
   am read <name>                        Final reply of its latest turn
   am approve <name> [--always]          Approve its pending permission request
   am deny <name>                        Deny it
@@ -141,6 +142,7 @@ async function main(argv: string[]): Promise<number> {
       saved: { type: "boolean" },
       all: { type: "boolean" },
       always: { type: "boolean" },
+      read: { type: "boolean" },
       project: { type: "string" },
       json: { type: "boolean" },
     },
@@ -244,7 +246,19 @@ async function main(argv: string[]): Promise<number> {
     case "wait": {
       const until = values.until ? (values.until.split(",") as AgentState[]) : undefined;
       const agent = await waitAgent(tmux, target(), until, timeoutMs);
-      out(agent, `${agent.name}: ${agent.state}${agent.detail ? ` (${agent.detail})` : ""}`);
+      const line = `${agent.name}: ${agent.state}${agent.detail ? ` (${agent.detail})` : ""}`;
+      if (!values.read || agent.state !== "idle") {
+        out(agent, line);
+        return 0;
+      }
+      // The wait is what was asked for: a reply that cannot be read is reported, not an error.
+      try {
+        const reply = await readReply(tmux, agent.paneId);
+        out({ ...agent, reply }, `${line}\n\n${reply || "(no final reply in its latest turn)"}`);
+      } catch (error) {
+        const readError = error instanceof Error ? error.message : String(error);
+        out({ ...agent, readError }, `${line}\n\n(could not read its reply: ${readError}; try am read ${agent.name})`);
+      }
       return 0;
     }
     case "read": {

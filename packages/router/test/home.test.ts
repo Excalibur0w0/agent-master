@@ -23,6 +23,7 @@ test("the router's home holds the same instructions for every agent kind, and it
   for (const command of ["approve", "deny", "keys", "open"]) assert.ok(!allow.includes(`Bash(am ${command}:*)`), command);
   // Its ledger is am ledger, not a file it edits.
   assert.ok(allow.includes("Bash(am ledger:*)"));
+  assert.ok(allow.includes("Bash(am router dispatch:*)") && !allow.includes("Bash(am router:*)"), "the router dispatches, but does not restart itself");
   assert.ok(!allow.some((rule: string) => rule.startsWith("Edit(") || rule.startsWith("Write(")));
   assert.match(files["AGENTS.md"], /worker contract travels by itself\*\* \(`none configured`\)/);
 });

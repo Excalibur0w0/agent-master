@@ -1,4 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { access, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -26,6 +27,12 @@ const USAGE = `am router — a long-running agent session that hands your reques
                      session field of am status <name> --json). Run it from your own terminal, not from inside the router
   am router stop [name]
                      Stop the router; its ledger stays for the next start
+  am router dispatch <worker> <text|-> --title T (--profile P | --kind K) [--cwd DIR] [--model M]
+                     [--waiting TEXT] [--next TEXT] [--router NAME] [-- <native agent args>]
+                     For the router: a new request to a new worker in one step. Starts the worker (am start), hands it
+                     the task (am prompt; - reads stdin) and adds the task to the router's ledger (am ledger add, waiting
+                     on "the worker" unless --waiting says otherwise; --router as for am ledger). If the worker starts
+                     but does not confirm the task, the task is still added, waiting on the user
 
   Everything else goes through am: am list, am open <name>, ...`;
 
@@ -41,10 +48,14 @@ function defaultContract(): string {
   return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "agent-master", "worker-contract.md");
 }
 
-/** Runs am as the user would: the router depends on am's command line only. */
-function am(args: string[], capture = false, input?: string): SpawnSyncReturns<string> {
-  // The router itself takes no worker contract: only the workers it starts do, through --env below.
+/** The router itself takes no worker contract: only the workers it starts do, through --env AM_CONTRACT in launch. */
+function withoutContract(): NodeJS.ProcessEnv {
   const { AM_CONTRACT: _, ...env } = process.env;
+  return env;
+}
+
+/** Runs am as the user would: the router depends on am's command line only. */
+function am(args: string[], capture = false, input?: string, env: NodeJS.ProcessEnv = withoutContract()): SpawnSyncReturns<string> {
   const result = spawnSync(process.env.AM_BIN ?? "am", args, { encoding: "utf8", env, input, stdio: [input === undefined ? "inherit" : "pipe", capture ? "pipe" : "inherit", capture ? "pipe" : "inherit"] });
   if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
     throw new Error("am not found on PATH; install it first (am install in the agent-master repo)");
@@ -226,10 +237,74 @@ async function stop(args: string[]): Promise<number> {
   return am(["stop", name]).status ?? 1;
 }
 
+/**
+ * Run by the router, for a new request: am start, am prompt and am ledger add in
+ * one command, so handing work out takes the router one step instead of three.
+ */
+async function dispatch(args: string[]): Promise<number> {
+  const { values, tokens } = parseArgs({
+    args,
+    allowPositionals: true,
+    tokens: true,
+    options: {
+      title: { type: "string" },
+      profile: { type: "string" },
+      kind: { type: "string" },
+      cwd: { type: "string" },
+      model: { type: "string" },
+      waiting: { type: "string" },
+      next: { type: "string" },
+      router: { type: "string" },
+    },
+  });
+  const end = tokens.find((token) => token.kind === "option-terminator")?.index ?? args.length;
+  const positional = (keep: (index: number) => boolean) =>
+    tokens.flatMap((token) => (token.kind === "positional" && keep(token.index) ? [token.value] : []));
+  const [worker, ...words] = positional((index) => index < end);
+  const native = positional((index) => index > end);
+  if (!worker) throw new UsageError("missing the worker's name: am router dispatch <worker> <text|-> --title T --profile P");
+  const title = values.title?.trim();
+  if (!title) throw new UsageError("--title is required: the task's title in the ledger");
+  if (!values.profile && !values.kind) throw new UsageError("pass --profile or --kind for the worker (see am profiles)");
+  const text = words.length === 1 && words[0] === "-" ? readFileSync(0, "utf8") : words.join(" ");
+  if (!text.trim()) throw new UsageError("nothing to send: give the task as text, or - to read it from stdin");
+
+  // The worker takes the user's contract from $AM_CONTRACT, which the router's own pane carries.
+  const started = am(
+    [
+      "start", worker,
+      ...(values.profile ? ["--profile", values.profile] : []),
+      ...(values.kind ? ["--kind", values.kind] : []),
+      ...(values.cwd ? ["--cwd", resolve(values.cwd)] : []),
+      ...(values.model ? ["--model", values.model] : []),
+      ...(native.length ? ["--", ...native] : []),
+    ],
+    false,
+    undefined,
+    process.env,
+  );
+  if (started.status !== 0) return started.status ?? 1;
+
+  const sent = am(["prompt", worker, "-"], false, text);
+  const waiting = sent.status === 0 ? (values.waiting ?? "the worker") : `the user: ${worker} started but did not confirm the task (see am status ${worker}); it was not resent`;
+  const added = am([
+    "ledger", "add", title, "--worker", worker, "--waiting", waiting,
+    ...(values.next ? ["--next", values.next] : []),
+    ...(values.router ? ["--router", values.router] : []),
+  ]);
+  if (added.status !== 0) {
+    process.stderr.write(`am router: ${worker} ${sent.status === 0 ? "has the task" : "is running"}, but the ledger has no record of it; add it with am ledger add\n`);
+    return added.status ?? 1;
+  }
+  return sent.status === 0 ? 0 : 1;
+}
+
 async function main([command, ...rest]: string[]): Promise<number> {
   switch (command) {
     case "start":
       return start(rest);
+    case "dispatch":
+      return dispatch(rest);
     case "restart":
       return restart(rest);
     case "stop":

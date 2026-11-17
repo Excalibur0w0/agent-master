@@ -12,7 +12,8 @@ const bin = resolve(import.meta.dirname, "../bin/am-router");
 /**
  * A stand-in for am that logs its arguments; `status` reports $AM_STATE when set, or no such agent;
  * `ledger list` prints $AM_LEDGER_LIST (default: an empty ledger); `ledger import` fails when $AM_IMPORT_FAIL is set;
- * `list --saved` prints $AM_SAVED; a prompt's text is kept in $AM_LOG.prompt.
+ * `list --saved` prints $AM_SAVED; a prompt's text is kept in $AM_LOG.prompt; `start` fails when $AM_START_FAIL is set and
+ * logs its $AM_CONTRACT to $AM_LOG.env; `prompt` fails when $AM_PROMPT_FAIL is set.
  */
 async function fakeAm(dir: string): Promise<string> {
   const path = join(dir, "am");
@@ -25,7 +26,14 @@ if [ "$1" = status ]; then
   echo "{\\"state\\":\\"$AM_STATE\\",\\"session\\":\\"$AM_SESSION\\"}"
 fi
 if [ "$1 $2" = "list --saved" ]; then echo "\${AM_SAVED:-[]}"; fi
-if [ "$1" = prompt ]; then cat > "$AM_LOG.prompt"; fi
+if [ "$1" = start ]; then
+  printf 'AM_CONTRACT=%s\\n' "$AM_CONTRACT" >> "$AM_LOG.env"
+  [ -z "$AM_START_FAIL" ] || { echo "claude did not finish starting in time" >&2; exit 1; }
+fi
+if [ "$1" = prompt ]; then
+  cat > "$AM_LOG.prompt"
+  [ -z "$AM_PROMPT_FAIL" ] || { echo "it did not confirm receiving the prompt" >&2; exit 1; }
+fi
 if [ "$1 $2" = "ledger list" ]; then echo "\${AM_LEDGER_LIST:-[]}"; fi
 if [ "$1 $2" = "ledger import" ]; then
   [ -z "$AM_IMPORT_FAIL" ] || { echo "cannot read it" >&2; exit 1; }
@@ -43,11 +51,12 @@ async function setup() {
   const log = join(dir, "log");
   await writeFile(log, "");
   // XDG_CONFIG_HOME: never pick up the user's own worker contract.
-  const env = { ...process.env, AM_BIN: await fakeAm(dir), AM_LOG: log, XDG_STATE_HOME: join(dir, "state"), XDG_CONFIG_HOME: join(dir, "config"), AM_STATE: "" };
-  const run = (args: string[], extra: Record<string, string> = {}) =>
-    new Promise<{ code: number; stdout: string; stderr: string }>((done) =>
-      execFile(bin, args, { cwd: dir, env: { ...env, ...extra } }, (error, stdout, stderr) => done({ code: error ? Number(error.code) : 0, stdout, stderr })),
-    );
+  const env = { ...process.env, AM_BIN: await fakeAm(dir), AM_LOG: log, XDG_STATE_HOME: join(dir, "state"), XDG_CONFIG_HOME: join(dir, "config"), AM_STATE: "", AM_CONTRACT: "", AM_START_FAIL: "", AM_PROMPT_FAIL: "" };
+  const run = (args: string[], extra: Record<string, string> = {}, input = "") =>
+    new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
+      const child = execFile(bin, args, { cwd: dir, env: { ...env, ...extra } }, (error, stdout, stderr) => done({ code: error ? Number(error.code) : 0, stdout, stderr }));
+      child.stdin!.end(input);
+    });
   const calls = async () => (await readFile(log, "utf8")).split("\n").filter(Boolean);
   return { dir, run, calls, home: (name: string) => join(dir, "state", "agent-master", "router", name), contract: join(dir, "config", "agent-master", "worker-contract.md") };
 }
@@ -185,12 +194,62 @@ test("stop closes a running router through am", async () => {
 test("am router ... reaches the router, and am -h documents it with every other command", async () => {
   const am = resolve(import.meta.dirname, "../../agent/bin/am");
   const help = await promisify(execFile)(am, ["-h"]);
-  for (const line of ["am start <name>", "am router start [name]", "am router restart [name]", "am router stop [name]", "am ledger show", "am ledger add <title>", "am ledger inbox take <n>", "am watcher start [name]", "am watcher stop [name]"]) {
+  for (const line of ["am start <name>", "am router start [name]", "am router restart [name]", "am router stop [name]", "am router dispatch <worker>", "am ledger show", "am ledger add <title>", "am ledger inbox take <n>", "am watcher start [name]", "am watcher stop [name]"]) {
     assert.ok(help.stdout.includes(line), line);
   }
   const routerHelp = await promisify(execFile)(am, ["router", "help"]);
   assert.match(routerHelp.stdout, /^am router — /);
   await assert.rejects(promisify(execFile)(am, ["router", "nope"]), (error: any) => error.code === 2 && /unknown command: nope/.test(error.stderr));
+});
+
+test("dispatch starts a worker, hands it the task and adds the task to the ledger, in one step", async () => {
+  const { dir, run, calls } = await setup();
+  const result = await run(
+    ["dispatch", "fix-login", "-", "--title", "修登录", "--profile", "claude", "--cwd", ".", "--next", "汇报后转告用户", "--", "--foo"],
+    { AM_CONTRACT: "/rules/contract.md" },
+    "登录页点了没反应，查一下\n",
+  );
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(await calls(), [
+    `start fix-login --profile claude --cwd ${dir} -- --foo`,
+    "prompt fix-login -",
+    "ledger add 修登录 --worker fix-login --waiting the worker --next 汇报后转告用户",
+  ]);
+  assert.equal(await readFile(join(dir, "log.prompt"), "utf8"), "登录页点了没反应，查一下\n");
+  assert.equal(await readFile(join(dir, "log.env"), "utf8"), "AM_CONTRACT=/rules/contract.md\n", "the worker gets the user's contract");
+
+  assert.equal((await run(["dispatch", "w2", "看下", "日志", "--title", "t", "--kind", "codex", "--waiting", "nobody", "--router", "ops"])).code, 0);
+  assert.deepEqual((await calls()).slice(3), ["start w2 --kind codex", "prompt w2 -", "ledger add t --worker w2 --waiting nobody --router ops"]);
+  assert.equal(await readFile(join(dir, "log.prompt"), "utf8"), "看下 日志");
+});
+
+test("dispatch: a worker that fails to start leaves the ledger alone; one that does not take the task is still recorded", async () => {
+  const { run, calls } = await setup();
+  const failed = await run(["dispatch", "a", "-", "--title", "t", "--profile", "claude"], { AM_START_FAIL: "1" }, "task");
+  assert.equal(failed.code, 1);
+  assert.match(failed.stderr, /did not finish starting/);
+  assert.deepEqual(await calls(), ["start a --profile claude"]);
+
+  const unconfirmed = await run(["dispatch", "b", "-", "--title", "t", "--profile", "claude"], { AM_PROMPT_FAIL: "1" }, "task");
+  assert.equal(unconfirmed.code, 1);
+  assert.deepEqual((await calls()).slice(1), [
+    "start b --profile claude",
+    "prompt b -",
+    "ledger add t --worker b --waiting the user: b started but did not confirm the task (see am status b); it was not resent",
+  ]);
+});
+
+test("dispatch refuses an incomplete request before touching am", async () => {
+  const { run, calls } = await setup();
+  for (const args of [
+    ["dispatch"],
+    ["dispatch", "w", "x", "--profile", "claude"],
+    ["dispatch", "w", "x", "--title", "t"],
+    ["dispatch", "w", "-", "--title", "t", "--profile", "claude"],
+  ]) {
+    assert.equal((await run(args, {}, "  \n")).code, 2, args.join(" "));
+  }
+  assert.deepEqual(await calls(), []);
 });
 
 test("start leaves a running router alone", async () => {

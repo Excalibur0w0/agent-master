@@ -66,7 +66,7 @@ am stop reviewer
 | `am interrupt <name>` / `am keys <name> <key>...` / `am stop <name>` | 中断 / 原始按键 / 关闭（am 仍记得它，可以 resume） |
 | `am resume <name>` / `am resume --all` | 用当初的启动参数重新起来，并接回它原来的会话；`--all` 恢复所有随 tmux 或机器重启丢掉的 agent，再拉起 watcher 的 feed loop |
 | `am forget <name>` | 删掉 am 对它的记录 |
-| `am router start\|restart\|stop` | 常驻的派活会话，见下文「am router」 |
+| `am router start\|restart\|stop\|dispatch` | 常驻的派活会话，见下文「am router」 |
 | `am watcher start\|stop\|status\|list\|resume` | 常驻、只读地盯消息，见下文「am watcher」 |
 | `am ledger show\|list\|add\|update\|pause\|start\|close\|inbox …` | router 的台账和待过目消息，见下文「am ledger」 |
 | `am -h` / `am help` | 所有命令的说明，包括 `am router`、`am watcher` |
@@ -256,6 +256,8 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 **台账**：在办的事记在 `am ledger`（SQLite，见下文），不在 router 的上下文里。router 每件事只写标题（就是 `Q:` 那行）、在等谁、下一步，worker 的 kind、预设、会话 ID 和运行状态由 am 带出。规则写在 `packages/router/ROUTER.md` 里：
 
 - router 在派活、收到结果、worker 卡住或需要决定、你做出决定、任务关闭时，当轮就更新台账，再回复你。
+- 新请求交给新 worker 用一条命令：`am router dispatch <worker> - --title "<标题>" --profile <预设> --cwd <目录> --next "<下一步>" <<'EOF' … EOF`，依次 `am start`、`am prompt`（任务从 stdin 读）、`am ledger add`（默认在等 worker）。原来要 router 来回三次，现在一次。worker 起不来就什么都不记；起来了但没确认收到任务，台账照记，改成在等你，命令报错退出。worker 照样从 router 的 `$AM_CONTRACT` 拿到合同。
+- router 后台等 worker 用 `am wait <name> --read`：worker 空闲时，等待命令的输出里直接带着它的最终回复，router 读这份输出就行，不用再跑 `am read`。注意 Claude Code 后台命令结束时的通知只给输出文件路径、不带内容，所以 router 还是要读一次文件，省下的是一个 am 进程（约 1 秒），不是一次模型往返。
 - 在办几件不设上限：新请求直接开始。排队（`--queue`）、先放一边（`am ledger pause`，并 `am stop` 它的 worker，之后 `am resume` 接回原会话）、重新开始（`am ledger start`）都只在你说的时候做。
 - 交付结果不等于结束：只有你明确说某件事结束了，它才 `am ledger close`、`am stop` 那个 worker。
 - 以前的 router 把台账写在自己目录的 `LEDGER.md` 里。`am router start` / `restart` 时如果还有这个文件，会先把它导入数据库（这时旧 router 已经停了，文件是最新的），再改名成 `LEDGER.md.imported-<日期>`，只导一次；导入失败就不启动，文件原样留着。

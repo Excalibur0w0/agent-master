@@ -1,16 +1,19 @@
 // The feed loop: runs the source's poller, keeps the feed state, and wakes
-// the watcher through am whenever it is idle and something is owed to it.
+// the watcher through am whenever it can take input (idle, or its last turn failed on an
+// API error) and something is owed to it.
 // No model runs here; the watcher only wakes when there is news.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-import { applySnapshot, batchPrompt, loadState, markDelivered, markReported, nextBatch, saveState, type FeedState } from "./feed.ts";
+import { applySnapshot, backoff, batchPrompt, canTake, loadState, markDelivered, markReported, nextBatch, saveState, type FeedState } from "./feed.ts";
 import { logFile, routerOf, stateFile, watcherDir, type WatcherConfig } from "./home.ts";
 
 export interface RunOptions {
-  /** How often to check whether the watcher can take a batch. */
+  /** How often to look for news, and to check whether the watcher can take a batch (default 2s). */
   tickMs?: number;
+  /** While the watcher cannot take a batch, checks back off from tickMs up to this (default 30s). */
+  maxWaitMs?: number;
   /** Wait before restarting a poller that exited. */
   restartMs?: number;
 }
@@ -89,7 +92,15 @@ export async function run(name: string, config: WatcherConfig, options: RunOptio
     child.on("exit", (code, signal) => restart(`exited (${signal ?? code})`));
   };
 
-  const tick = async () => {
+  const tickMs = options.tickMs ?? 2000;
+  const maxWaitMs = options.maxWaitMs ?? 30_000;
+  // Each am status starts a node process (about 0.2s of CPU): asked every 2s while the watcher is busy or
+  // stuck, that alone kept a CPU core 6-7% busy. So a watcher that cannot take a batch is checked less
+  // and less often, up to maxWaitMs; news reaches it at most that much later.
+  let waitMs = tickMs;
+
+  /** One round; returns how long to wait before the next. */
+  const tick = async (): Promise<number> => {
     // Items the user read elsewhere: the ledger takes them off the review list. No model needed.
     const gone = [...state.queue.gone];
     if (gone.length) {
@@ -103,34 +114,40 @@ export async function run(name: string, config: WatcherConfig, options: RunOptio
       }
     }
     const batch = nextBatch(state, config.batch ?? 20);
-    if (!batch) return;
+    if (!batch) return (waitMs = tickMs);
     const status = am(["status", name, "--json"]);
     const agent = status.status === 0 ? JSON.parse(status.stdout) : undefined;
-    const note = agent ? `${agent.state}` : "not running";
-    if (agent?.state !== "idle") {
+    const how = canTake(agent);
+    if (!how) {
+      const note = agent ? `${agent.state}${agent.stall ? ` (${agent.stall})` : ""}` : "not running";
       if (note !== lastAgentNote) log(`watcher ${name} is ${note}; ${state.queue.items.length} waiting`);
       lastAgentNote = note;
-      return;
+      return (waitMs = backoff(waitMs, tickMs, maxWaitMs));
     }
     lastAgentNote = "idle";
+    waitMs = tickMs;
     const left = state.queue.items.length - batch.length;
-    const sent = am(["prompt", name, "-"], batchPrompt(name, batch, left));
+    const sent = am(["prompt", name, "-"], batchPrompt(name, batch, left, how === "interrupted"));
     if (sent.status !== 0) {
       log(`could not wake ${name}: ${sent.stderr.trim().slice(0, 300)}`);
-      return;
+      return tickMs;
     }
     markDelivered(state, batch);
     await persist();
-    log(`woke ${name}: ${batch.length} new${left ? `, ${left} still queued` : ""}`);
+    log(`woke ${name}${how === "interrupted" ? " after its last turn failed on an API error" : ""}: ${batch.length} new${left ? `, ${left} still queued` : ""}`);
+    return tickMs;
   };
 
   log(`started; ${state.pending.length} pending and ${state.queue.items.length} queued from before`);
   startPoller();
   const loop = () =>
     tick()
-      .catch((error) => log(`tick failed: ${error instanceof Error ? error.message : String(error)}`))
-      .finally(() => {
-        if (!stopping) setTimeout(loop, options.tickMs ?? 2000);
+      .catch((error) => {
+        log(`tick failed: ${error instanceof Error ? error.message : String(error)}`);
+        return tickMs;
+      })
+      .then((wait) => {
+        if (!stopping) setTimeout(loop, wait);
       });
   loop();
 }

@@ -22,7 +22,9 @@ review in the ledger (am ledger show, "For review"; am ledger inbox)
                              with am watcher stop stays stopped. Not started at login: after a reboot, run
                              am resume --all (or am watcher start)
   am watcher run <name>    The feed loop itself (what start runs in tmux): runs the source's poller, and wakes the
-                             watcher through am prompt when it is idle and new items are queued
+                             watcher through am prompt when new items are queued and it is idle, or its last
+                             turn failed on an API error (it is told to finish that turn first). While it is
+                             busy or stuck otherwise (usage limit, content filter), checks back off to every 30s
 
   Configure a watcher under "watchers" in ${configPath()}:
     "<name>": { "poll": ["node", "/path/poll.js"], "instructions": "/path/SOURCE.md",

@@ -276,7 +276,7 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 
 盯一个消息来源（比如聊天工具里 @我 的消息和私聊），挑出需要你处理的，分优先级写进台账的「待过目」（`am ledger inbox`）。这些不是任务；你说要处理哪条，router 才用 `am ledger inbox take` 把它转成在办事项。分两部分，大模型不轮询：
 
-- **feed loop**（tmux 会话 `am-<name>-feed`，不调用模型）：运行来源提供的 poller（轮询脚本）。poller 只在可能有变化时打印一行 `{"pending":[{"id":…},…]}`（当前所有待处理的全量），循环自己算出哪些是新的、哪些你已经在别处读过，按 id 去重，记在 `state.json` 里（重启不重发、不漏）。watcher 空闲时，循环用 `am prompt` 把新条目（每次最多 `batch` 条，默认 20）交给它；你在别处读过的，循环直接告诉台账（`am ledger inbox read`），不用叫醒 Claude。
+- **feed loop**（tmux 会话 `am-<name>-feed`，不调用模型）：运行来源提供的 poller（轮询脚本）。poller 只在可能有变化时打印一行 `{"pending":[{"id":…},…]}`（当前所有待处理的全量），循环自己算出哪些是新的、哪些你已经在别处读过，按 id 去重，记在 `state.json` 里（重启不重发、不漏）。watcher 空闲时，循环用 `am prompt` 把新条目（每次最多 `batch` 条，默认 20）交给它。它上一轮因为 API 出错中断时（比如电脑在它回复到一半时睡眠），新条目照样交，并提醒它先把上一批处理完；碰到用量上限、内容过滤就先等着。watcher 忙着或卡住时，循环查它状态的间隔从 2 秒逐步拉长到 30 秒，免得空转占 CPU。你在别处读过的，循环直接告诉台账（`am ledger inbox read`），不用叫醒 Claude。
 - **watcher**（am agent `<name>`，Claude）：被叫醒后读规则、分优先级（紧急 / 一般 / 不重要）、需要时读上下文，同一件事合并成一条，用 `am ledger inbox add/update` 写进台账（字段走 stdin 的 JSON，消息里的文字不会进命令行）。你在它的会话里（`am open <name>`）纠正它的判断，它会改条目并把规则记进 `desk/RULES.md`，以后照着分。看结果：`am ledger show` 的「For review」，或 `am ledger inbox list`。
 
 ```sh

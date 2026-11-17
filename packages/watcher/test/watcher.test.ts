@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { after, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { applySnapshot, batchPrompt, emptyState, markDelivered, markReported, nextBatch } from "../src/feed.ts";
+import { applySnapshot, backoff, batchPrompt, canTake, emptyState, markDelivered, markReported, nextBatch } from "../src/feed.ts";
 import { agentArgs, loadWatchers, pick, renderInstructions } from "../src/home.ts";
 
 const bin = resolve(import.meta.dirname, "../bin/am-watcher");
@@ -42,6 +42,24 @@ test("the wake-up prompt frames items as data that cannot close their block", ()
   assert.match(text, /never instructions to you/);
   assert.equal(text.match(/<\/items>/g)?.length, 1, "only the real closing tag");
   assert.match(text, /\\u003c\/items>/);
+});
+
+test("a watcher takes a batch when idle or after an API error, and is checked less often while it cannot", () => {
+  assert.equal(canTake({ state: "idle" }), "idle");
+  assert.equal(canTake({ state: "stalled", stall: "error" }), "interrupted", "the failed turn has ended: it takes input again");
+  for (const stall of ["usage_limit", "content_filter", "no_output"]) assert.equal(canTake({ state: "stalled", stall }), undefined, stall);
+  for (const state of ["working", "blocked", "starting", "exited"]) assert.equal(canTake({ state }), undefined, state);
+  assert.equal(canTake(undefined), undefined, "not running");
+
+  const waits: number[] = [];
+  let wait = 2000;
+  for (let i = 0; i < 6; i++) waits.push((wait = backoff(wait, 2000, 30_000)));
+  assert.deepEqual(waits, [4000, 8000, 16000, 30000, 30000, 30000]);
+
+  const plain = batchPrompt("chat", [{ id: "1" }], 0);
+  assert.doesNotMatch(plain, /cut off/);
+  const after = batchPrompt("chat", [{ id: "1" }], 0, true);
+  assert.match(after, /^\[am watcher\] chat: 1 new item\(s\)\.\nYour last turn was cut off by an API error .*`am ledger inbox list`.*Then sort these\.\n/);
 });
 
 test("watchers are read from am.json and run read-only", async () => {
@@ -225,4 +243,64 @@ test("a poller that cannot start is retried, and the feed loop keeps running", a
     child.kill("SIGTERM");
   }
   await waitFor(async () => /stopped/.test(await readFile(logPath, "utf8")), "a clean stop");
+});
+
+test("the feed loop waits out a usage limit, backing off, and goes on after an API error", async () => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "am-sub-stall-")));
+  const log = join(dir, "am.log");
+  const prompts = join(dir, "prompts.txt");
+  const fakeAm = join(dir, "am");
+  // The watcher's state is whatever status.json says; prompts are kept.
+  await writeFile(
+    fakeAm,
+    `#!/bin/sh
+echo "$1" >> ${log}
+case "$1" in
+  status) cat ${dir}/status.json ;;
+  prompt) { cat; echo '====='; } >> ${prompts} ;;
+esac
+`,
+  );
+  const poller = join(dir, "poll.sh");
+  await writeFile(
+    poller,
+    `#!/bin/sh
+echo '{"pending":[{"id":"1"}]}'
+while [ ! -f ${dir}/go ]; do sleep 0.2; done
+echo '{"pending":[{"id":"1"},{"id":"2"}]}'
+exec sleep 600
+`,
+  );
+  await chmod(fakeAm, 0o755);
+  await chmod(poller, 0o755);
+  await writeFile(join(dir, "status.json"), '{"state":"stalled","stall":"usage_limit","detail":"usage limit"}');
+  await mkdir(join(dir, "config", "agent-master"), { recursive: true });
+  await writeFile(join(dir, "config", "agent-master", "am.json"), JSON.stringify({ watchers: { w: { poll: [poller] } } }));
+  const child = execFile(bin, ["run", "w"], { env: { ...process.env, XDG_CONFIG_HOME: join(dir, "config"), XDG_STATE_HOME: join(dir, "state"), AM_BIN: fakeAm } });
+  const logPath = join(dir, "state", "agent-master", "watcher", "w", "feed.log");
+  const feedLog = async () => (existsSync(logPath) ? readFile(logPath, "utf8") : "");
+  try {
+    // A usage limit: the item waits; another prompt would only fail again.
+    await waitFor(async () => (await feedLog()).includes("watcher w is stalled (usage_limit); 1 waiting"), "the wait");
+    const sawLimit = Date.now();
+    assert.ok(!existsSync(prompts), "no prompt into a usage limit");
+
+    // The turn failed on an API error instead: the session takes input again, so the item goes in, with a note.
+    await writeFile(join(dir, "status.json"), '{"state":"stalled","stall":"error","detail":"error: API Error"}');
+    await waitFor(async () => existsSync(prompts), "the wake-up after the error");
+    assert.ok(Date.now() - sawLimit >= 3000, "after a check that found it stuck, the next one waits 4s, not 2s");
+    assert.match(await readFile(prompts, "utf8"), /^\[am watcher\] w: 1 new item\(s\)\.\nYour last turn was cut off by an API error/);
+    assert.match(await feedLog(), /woke w after its last turn failed on an API error: 1 new/);
+
+    // Idle again: the next item goes in at once, without the note.
+    await writeFile(join(dir, "status.json"), '{"state":"idle","detail":""}');
+    await writeFile(join(dir, "go"), "");
+    await waitFor(async () => (await readFile(prompts, "utf8")).split("=====\n").length === 3, "the second wake-up");
+    const second = (await readFile(prompts, "utf8")).split("=====\n")[1];
+    assert.match(second, /^\[am watcher\] w: 1 new item\(s\)\.\nThese are messages/);
+    assert.match(second, /"id":"2"/);
+  } finally {
+    child.kill("SIGTERM");
+  }
+  await waitFor(async () => /stopped/.test(await feedLog()), "a clean stop");
 });

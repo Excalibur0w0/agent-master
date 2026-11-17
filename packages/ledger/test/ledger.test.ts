@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -115,10 +115,13 @@ async function setup() {
   await writeFile(
     fakeAm,
     `#!/bin/sh
+printf '%s\\n' "$*" >> "$AM_LOG"
+live='{"name":"fix-login","kind":"claude","profile":"claude","session":"0199-live","cwd":"/work/app","state":"working","detail":""}'
 case "$1 $2" in
-  "status fix-login") echo '{"name":"fix-login","kind":"claude","profile":"claude","session":"0199-live","cwd":"/work/app","state":"working","detail":""}' ;;
+  "status fix-login") echo "$live" ;;
   "status "*) echo '{"error":"not_found"}' >&2; exit 1 ;;
   "list --saved") echo '[{"name":"old-one","kind":"codex","profile":"","session":"0198-saved","cwd":"/work/old","status":"stopped"}]' ;;
+  "list --json") [ -z "$AM_LIST_FAIL" ] || exit 1; echo "[$live]" ;;
 esac
 `,
   );
@@ -126,13 +129,21 @@ esac
   await mkdir(join(dir, "config", "agent-master"), { recursive: true });
   // An old am.json may still name a limit; nothing reads it any more.
   await writeFile(join(dir, "config", "agent-master", "am.json"), JSON.stringify({ ledger: { maxActive: 2 } }));
-  const env = { ...process.env, AM_BIN: fakeAm, AM_LEDGER_DB: join(dir, "ledger.db"), XDG_CONFIG_HOME: join(dir, "config"), AM_ROUTER: "", AM_WATCHER: "" };
+  const log = join(dir, "am.log");
+  await writeFile(log, "");
+  const env = { ...process.env, AM_BIN: fakeAm, AM_LOG: log, AM_LEDGER_DB: join(dir, "ledger.db"), XDG_CONFIG_HOME: join(dir, "config"), AM_ROUTER: "", AM_WATCHER: "", AM_LIST_FAIL: "" };
   const run = (args: string[], options: { input?: string; env?: Record<string, string> } = {}) =>
     new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
       const child = execFile(bin, args, { env: { ...env, ...options.env } }, (error, stdout, stderr) => done({ code: error ? Number(error.code) : 0, stdout, stderr }));
       child.stdin!.end(options.input ?? "");
     });
-  return { dir, run };
+  /** The am calls made since the last look. */
+  const calls = async () => {
+    const lines = (await readFile(log, "utf8")).split("\n").filter(Boolean);
+    await writeFile(log, "");
+    return lines;
+  };
+  return { dir, run, calls };
 }
 
 test("am ledger: the router writes title, who it waits on and the next step; am fills in the worker", async () => {
@@ -159,6 +170,27 @@ test("am ledger: the router writes title, who it waits on and the next step; am 
   assert.equal(closed.stdout, "closed #1 修登录\nits worker fix-login is still working: stop it with am stop fix-login\n", "no nudge to start what the user queued");
   assert.equal((await run(["list", "--router", "other"])).stdout.trim(), "no tasks", "ledgers are per router");
   assert.equal((await run(["list"], { env: { AM_ROUTER: "other" } })).stdout.trim(), "no tasks", "$AM_ROUTER picks the ledger");
+});
+
+test("am ledger asks am about all workers at once, not once per task", async () => {
+  const { run, calls } = await setup();
+  assert.equal((await run(["add", "修登录", "--worker", "fix-login"])).code, 0);
+  assert.deepEqual(await calls(), ["status fix-login --json"], "add asks about its worker once");
+  for (const [title, worker] of [["旧方案", "old-one"], ["又一件", "fix-login"], ["没人认识", "nobody-knows"]]) await run(["add", title, "--worker", worker]);
+  await calls();
+
+  const show = await run(["show"]);
+  assert.match(show.stdout, /fix-login \(profile claude, conversation 0199-live\) in \/work\/app — working/);
+  assert.match(show.stdout, /old-one \(codex, conversation 0198-saved\) in \/work\/old — stopped/);
+  assert.match(show.stdout, /nobody-knows — not known to am/);
+  assert.deepEqual(await calls(), ["list --json", "list --saved --json"], "one list of running agents, one of saved ones");
+  assert.match((await run(["list"])).stdout, /#3\s+active\s+又一件\s+fix-login \(working\)/);
+  assert.deepEqual(await calls(), ["list --json", "list --saved --json"]);
+
+  // When am list fails, the ledger still asks about each worker.
+  const fallback = await run(["list"], { env: { AM_LIST_FAIL: "1" } });
+  assert.match(fallback.stdout, /#1\s+active\s+修登录\s+fix-login \(working\)/);
+  assert.deepEqual(await calls(), ["list --json", "status fix-login --json", "status old-one --json", "list --saved --json", "status nobody-knows --json"]);
 });
 
 test("am ledger inbox: a watcher records from stdin JSON; the router takes what the user wants", async () => {

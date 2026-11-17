@@ -26,7 +26,7 @@ import {
 } from "./db.ts";
 import { parseLedger } from "./importer.ts";
 import { renderLedger, workerLine } from "./render.ts";
-import { workerInfo, type WorkerInfo } from "./workers.ts";
+import { loadLiveWorkers, workerInfo, type WorkerInfo } from "./workers.ts";
 
 const USAGE = `am ledger — the router's ledger of work in flight, and the messages watchers put up for the user (SQLite)
 
@@ -123,6 +123,7 @@ async function main(argv: string[]): Promise<number> {
   /** Live worker info for each task, written back when am now knows more (a conversation id, say). */
   const infoFor = (tasks: Task[]) => {
     const infos = new Map<number, WorkerInfo | undefined>();
+    if (new Set(tasks.filter((t) => t.worker && t.status !== "closed").map((t) => t.worker)).size > 1) loadLiveWorkers();
     for (const task of tasks) {
       if (!task.worker || task.status === "closed") continue;
       const info = workerInfo(task.worker);

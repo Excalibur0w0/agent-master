@@ -25,14 +25,15 @@ export interface WatcherConfig {
   auto?: AutoStart;
 }
 
-/** A temporary worker's start: a profile from am.json (or a kind), its directory, and the worker contract. */
+/**
+ * Overrides for a temporary worker's start. Unset, it starts as the router's workers do: the router's project,
+ * the profile named after its worker kind (else that kind), and its worker contract (see auto.ts).
+ */
 export interface AutoStart {
-  /** Default: kind claude. */
   profile?: string;
   kind?: string;
-  /** Default: your home directory. Claude asks once to trust a new directory: trust it beforehand. */
+  /** Claude asks once to trust a new directory: trust it beforehand. */
   cwd?: string;
-  /** Default: ~/.config/agent-master/worker-contract.md when it exists, as for the router's workers. */
   contract?: string;
 }
 

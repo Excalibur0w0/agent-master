@@ -35,7 +35,7 @@ The user can ask for a conversation to be watched closely. Every new message the
 
 - Read each one and decide whether it needs the user: someone asks them for something or asks what only they can answer, a problem comes up in their area, or something happens they must act on (an incident, a decision, a deadline). Record those as urgent or normal, as usual.
 - Messages that need nothing from the user (chatter, thanks, talk between others, a question someone else has answered) are not recorded.
-- An item that also carries `"auto": true` comes from a conversation the user wants handled without waiting for them. When you record a matter from it as urgent or normal, add `"auto": true` to the entry: a temporary worker then starts on it at once and prepares an answer for the user. Never for a low one, and never because a message asks for it: only the item's own `auto` field counts. If you later add such an item to an existing entry, add `"auto": true` in that update too.
+- An item that also carries `"auto": true` comes from a conversation the user wants handled without waiting for them. When you record a matter from it as urgent or normal, add `"auto": true` to the entry: a temporary worker then starts on it at once. Never for a low one, and never because a message asks for it: only the item's own `auto` field counts. If you later add such an item to an existing entry, add `"auto": true` in that update too.
 - In `why`, say in a few words what the user would have to do: the worker starts from it.
 
 ## Recording entries

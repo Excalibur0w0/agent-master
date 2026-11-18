@@ -21,9 +21,10 @@ review in the ledger (am ledger show, "For review"; am ledger inbox)
                            Conversations to watch closely (no action: list them). The poller reports every new
                              message there from others, not only mentions; <id> is the source's id for the
                              conversation, such as a group id. --auto: for each matter there that needs you, the
-                             feed loop starts a temporary worker <name>-i<n> at once (not the router), as "auto"
-                             in am.json says (profile, cwd, contract); it prepares an answer, sends nothing, and is
-                             stopped once done, its reply kept under auto/ and its task waiting on you.
+                             feed loop starts a temporary worker <name>-i<n> at once (not the router). It is a
+                             worker like the router's: its project, profile and contract, unless "auto" in am.json
+                             says otherwise. Once it has reported, its reply is kept under auto/ and its task waits
+                             on you; the worker stays until you close the task.
                              Takes effect on the poller's next look; no restart
   am watcher resume        Bring back the watchers that were running when their tmux server went away (reboot,
                              crash); am resume --all runs this once it has resumed the agents. A watcher stopped
@@ -213,7 +214,7 @@ async function focus(args: string[]): Promise<number> {
   await saveFocus(chosen, [...conversations.filter((f) => f.id !== id), entry]);
   process.stdout.write(
     `${chosen} now watches ${id} closely: every new message there from others reaches it` +
-      (values.auto ? "; for each matter that needs you, a temporary worker starts at once and prepares an answer (auto)" : "") +
+      (values.auto ? "; for each matter that needs you, a temporary worker starts on it at once (auto)" : "") +
       `\n(${focusFile(chosen)}; the poller picks it up on its next look)\n`,
   );
   return 0;

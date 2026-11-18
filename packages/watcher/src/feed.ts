@@ -2,6 +2,8 @@
 // still owed. Kept in state.json so a restart neither repeats nor drops items.
 import { readFile, rename, writeFile } from "node:fs/promises";
 
+import type { AutoJob } from "./auto.ts";
+
 /** One thing needing the user's attention, as the poller reports it; only `id` is required. */
 export interface Item {
   id: string;
@@ -15,9 +17,11 @@ export interface FeedState {
   delivered: Record<string, { at: number; gone?: number }>;
   /** Still owed to the watcher. */
   queue: { items: Item[]; gone: string[] };
+  /** Temporary workers preparing answers for auto entries, by worker name (see auto.ts). */
+  auto: Record<string, AutoJob>;
 }
 
-export const emptyState = (): FeedState => ({ pending: [], delivered: {}, queue: { items: [], gone: [] } });
+export const emptyState = (): FeedState => ({ pending: [], delivered: {}, queue: { items: [], gone: [] }, auto: {} });
 
 /** Delivered items the user read more than this long ago are forgotten. */
 const KEEP_GONE_MS = 7 * 24 * 3600_000;

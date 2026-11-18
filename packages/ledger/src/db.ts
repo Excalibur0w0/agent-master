@@ -297,13 +297,17 @@ export function listEntries(db: DatabaseSync, router: string, all = false): Entr
 type EntryRow = Omit<Entry, "items" | "auto"> & { auto: number };
 
 /**
- * The open entries the router has not been told about that need it now: the ones to hand to a worker at once
- * (auto) and the urgent ones to tell the user about. Each is reported once.
+ * The open entries nobody has been told about yet that need someone now: the ones to hand to a worker at once
+ * (auto) and the urgent ones. Each is reported once. autoOnly: just the auto ones (what a watcher's feed loop
+ * hands to temporary workers); watcher: just that watcher's.
  */
-export function noticeEntries(db: DatabaseSync, router: string): Entry[] {
+export function noticeEntries(db: DatabaseSync, router: string, options: { autoOnly?: boolean; watcher?: string } = {}): Entry[] {
   return transaction(db, () => {
+    const which = options.autoOnly ? "auto = 1" : "(auto = 1 OR priority = 'urgent')";
+    const watcher = options.watcher === undefined ? "" : "AND watcher = ?";
+    const args = options.watcher === undefined ? [router] : [router, options.watcher];
     const ids = (
-      db.prepare("SELECT id FROM inbox WHERE router = ? AND status = 'open' AND noticed_at IS NULL AND (auto = 1 OR priority = 'urgent') ORDER BY id").all(router) as Array<{ id: number }>
+      db.prepare(`SELECT id FROM inbox WHERE router = ? ${watcher} AND status = 'open' AND noticed_at IS NULL AND ${which} ORDER BY id`).all(...args) as Array<{ id: number }>
     ).map((r) => r.id);
     const at = now();
     for (const id of ids) db.prepare("UPDATE inbox SET noticed_at = ? WHERE id = ?").run(at, id);

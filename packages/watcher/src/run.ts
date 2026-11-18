@@ -2,12 +2,14 @@
 // the watcher through am whenever it can take input (idle, or its last turn failed on an
 // API error) and something is owed to it.
 // No model runs here; the watcher only wakes when there is news.
+// It also runs the temporary workers for auto entries (auto.ts): the router does not handle them.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 import { applySnapshot, backoff, batchPrompt, canTake, loadState, markDelivered, markReported, nextBatch, saveState, type FeedState } from "./feed.ts";
-import { logFile, routerOf, stateFile, watcherDir, type WatcherConfig } from "./home.ts";
+import { createAuto } from "./auto.ts";
+import { loadFocus, logFile, routerOf, stateFile, watcherDir, type WatcherConfig } from "./home.ts";
 
 export interface RunOptions {
   /** How often to look for news, and to check whether the watcher can take a batch (default 2s). */
@@ -99,8 +101,33 @@ export async function run(name: string, config: WatcherConfig, options: RunOptio
   // and less often, up to maxWaitMs; news reaches it at most that much later.
   let waitMs = tickMs;
 
+  // Auto entries: looked for once the watcher's turn after a delivery is over (that is when it records them),
+  // and every 10 minutes in case they came another way (the user correcting it in its session).
+  const auto = createAuto({ watcher: name, router: routerOf(config), start: config.auto, dir, am, log, jobs: state.auto });
+  const SWEEP_MS = 10 * 60_000;
+  let nextSweep = 0;
+  let claimAt: number | undefined;
+  const autoRound = async () => {
+    let changed = auto.check();
+    const now = Date.now();
+    let due = now >= nextSweep;
+    if (due) nextSweep = now + SWEEP_MS;
+    if (claimAt !== undefined && now >= claimAt) {
+      const status = am(["status", name, "--json"]);
+      const view = status.status === 0 ? JSON.parse(status.stdout) : undefined;
+      if (view?.state === "working" || view?.state === "starting") claimAt = now + 30_000;
+      else {
+        claimAt = undefined;
+        due = true;
+      }
+    }
+    if (due && (await loadFocus(name)).some((f) => f.auto)) changed = auto.claim() || changed;
+    if (changed) await persist();
+  };
+
   /** One round; returns how long to wait before the next. */
   const tick = async (): Promise<number> => {
+    await autoRound();
     // Items the user read elsewhere: the ledger takes them off the review list. No model needed.
     const gone = [...state.queue.gone];
     if (gone.length) {
@@ -133,6 +160,7 @@ export async function run(name: string, config: WatcherConfig, options: RunOptio
       return tickMs;
     }
     markDelivered(state, batch);
+    claimAt = Date.now() + 15_000;
     await persist();
     log(`woke ${name}${how === "interrupted" ? " after its last turn failed on an API error" : ""}: ${batch.length} new${left ? `, ${left} still queued` : ""}`);
     return tickMs;

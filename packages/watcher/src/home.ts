@@ -21,6 +21,19 @@ export interface WatcherConfig {
   batch?: number;
   /** Whose ledger its entries go to (default: router). */
   router?: string;
+  /** How the temporary workers for auto entries start (see auto.ts). */
+  auto?: AutoStart;
+}
+
+/** A temporary worker's start: a profile from am.json (or a kind), its directory, and the worker contract. */
+export interface AutoStart {
+  /** Default: kind claude. */
+  profile?: string;
+  kind?: string;
+  /** Default: your home directory. Claude asks once to trust a new directory: trust it beforehand. */
+  cwd?: string;
+  /** Default: ~/.config/agent-master/worker-contract.md when it exists, as for the router's workers. */
+  contract?: string;
 }
 
 export class UsageError extends Error {}
@@ -54,11 +67,24 @@ export async function loadWatchers(path = configPath()): Promise<Record<string, 
     if (raw.commands !== undefined && !strings(raw.commands)) throw bad("commands must be an array of strings");
     for (const key of ["description", "instructions", "model", "router"]) if (raw[key] !== undefined && typeof raw[key] !== "string") throw bad(`${key} must be a string`);
     if (raw.batch !== undefined && !(Number.isInteger(raw.batch) && raw.batch > 0)) throw bad("batch must be a positive integer");
+    if (raw.auto !== undefined) {
+      if (!raw.auto || typeof raw.auto !== "object") throw bad("auto must be an object");
+      for (const key of ["profile", "kind", "cwd", "contract"]) if (raw.auto[key] !== undefined && typeof raw.auto[key] !== "string") throw bad(`auto.${key} must be a string`);
+    }
     watchers[name] = {
       ...raw,
       poll: raw.poll.map(expandHome),
       commands: (raw.commands ?? []).map((c: string) => c.split(" ").map(expandHome).join(" ")),
       ...(raw.instructions ? { instructions: expandHome(raw.instructions) } : {}),
+      ...(raw.auto
+        ? {
+            auto: {
+              ...raw.auto,
+              ...(raw.auto.cwd ? { cwd: expandHome(raw.auto.cwd) } : {}),
+              ...(raw.auto.contract ? { contract: expandHome(raw.auto.contract) } : {}),
+            },
+          }
+        : {}),
     };
   }
   return watchers;

@@ -198,9 +198,10 @@ exec sleep 600
   assert.match(status.stdout, /inbox: Claude session idle; feed loop running/);
   assert.match(status.stdout, /feed: 2 pending, 2 given to the watcher, 0 new waiting for it/);
   assert.match(status.stdout, /watched closely: none/);
+  assert.match(status.stdout, /temporary workers: none/);
 
   // Watching a conversation closely: a file the poller reads on its next look ($AM_WATCHER_DIR/focus.json), no restart.
-  assert.match((await sub("focus", "add", "g42", "--auto", "--note", "incidents")).stdout, /^inbox now watches g42 closely: every new message there from others reaches it; matters that need you go to the router at once \(auto\)/);
+  assert.match((await sub("focus", "add", "g42", "--auto", "--note", "incidents")).stdout, /^inbox now watches g42 closely: every new message there from others reaches it; for each matter that needs you, a temporary worker starts at once and prepares an answer \(auto\)/);
   assert.match((await sub("focus", "inbox", "add", "g7")).stdout, /^inbox now watches g7 closely: every new message there from others reaches it\n/);
   const focused = JSON.parse(await readFile(join(home, "focus.json"), "utf8"));
   assert.deepEqual(focused.conversations.map((c: { id: string; auto?: boolean; note?: string }) => [c.id, c.auto ?? false, c.note ?? ""]), [["g42", true, "incidents"], ["g7", false, ""]]);

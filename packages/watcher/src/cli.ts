@@ -20,8 +20,10 @@ review in the ledger (am ledger show, "For review"; am ledger inbox)
   am watcher focus [name] [add <id> [--auto] [--note TEXT] | remove <id>]
                            Conversations to watch closely (no action: list them). The poller reports every new
                              message there from others, not only mentions; <id> is the source's id for the
-                             conversation, such as a group id. --auto: matters there that need you go to the router
-                             at once, which hands each to a worker to prepare an answer, without waiting for you.
+                             conversation, such as a group id. --auto: for each matter there that needs you, the
+                             feed loop starts a temporary worker <name>-i<n> at once (not the router), as "auto"
+                             in am.json says (profile, cwd, contract); it prepares an answer, sends nothing, and is
+                             stopped once done, its reply kept under auto/ and its task waiting on you.
                              Takes effect on the poller's next look; no restart
   am watcher resume        Bring back the watchers that were running when their tmux server went away (reboot,
                              crash); am resume --all runs this once it has resumed the agents. A watcher stopped
@@ -178,6 +180,7 @@ async function status(name: string | undefined): Promise<number> {
       `feed: ${state.pending.length} pending, ${delivered} given to the watcher, ${state.queue.items.length} new waiting for it`,
       `up for review in ${routerOf(config)}'s ledger: ${review}; see am ledger show`,
       `watched closely: ${(await loadFocus(chosen)).map((f) => `${f.id}${f.auto ? " (auto)" : ""}`).join(", ") || "none"}`,
+      `temporary workers: ${Object.entries(state.auto ?? {}).map(([worker, job]) => `${worker} (task #${job.task}${job.prompted ? "" : ", has not taken it yet"})`).join(", ") || "none"}`,
       `rules: ${rulesFile(chosen)}`,
       ...(tail.length ? ["log:", ...tail.map((line) => `  ${line}`)] : []),
     ].join("\n") + "\n",
@@ -210,7 +213,7 @@ async function focus(args: string[]): Promise<number> {
   await saveFocus(chosen, [...conversations.filter((f) => f.id !== id), entry]);
   process.stdout.write(
     `${chosen} now watches ${id} closely: every new message there from others reaches it` +
-      (values.auto ? "; matters that need you go to the router at once (auto), which hands each to a worker to prepare an answer" : "") +
+      (values.auto ? "; for each matter that needs you, a temporary worker starts at once and prepares an answer (auto)" : "") +
       `\n(${focusFile(chosen)}; the poller picks it up on its next look)\n`,
   );
   return 0;

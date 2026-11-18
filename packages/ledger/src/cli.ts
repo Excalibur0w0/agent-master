@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -44,10 +44,11 @@ const USAGE = `am ledger — the router's ledger of work in flight, and the mess
   am ledger import <LEDGER.md>           Bring tasks over from a markdown ledger (am router start does it once)
 
   am ledger inbox list [--all]           Messages watchers put up for review: not tasks
-  am ledger inbox add - | --priority P --title T --item ID... [--who W] [--where X] [--at TIME] [--why TEXT]
+  am ledger inbox add - | --file F | --priority P --title T --item ID... [--who W] [--where X] [--at TIME] [--why TEXT]
                                          A watcher records one matter (urgent | normal | low); "-" reads the same
-                                         fields as JSON on stdin: {"priority", "title", "who", "where", "at", "why", "items"}
-  am ledger inbox update <n> - | [the add options]
+                                         fields as JSON on stdin: {"priority", "title", "who", "where", "at", "why", "items"};
+                                         --file reads that JSON from file F and deletes F once recorded
+  am ledger inbox update <n> - | --file F | [the add options]
                                          Change an entry; items given are added to it
   am ledger inbox read --item ID...      The user read these items elsewhere; an entry whose items are all read leaves
   am ledger inbox dismiss <n>            The user does not need it
@@ -65,13 +66,14 @@ const id = (text: string | undefined, prefix: string, what: string): number => {
   return Number(match[1]);
 };
 
-function readJson(): any {
+/** One JSON object from stdin (0) or a file. */
+function readJson(from: number | string = 0): any {
   try {
-    const value = JSON.parse(readFileSync(0, "utf8"));
+    const value = JSON.parse(readFileSync(from, "utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
     return value;
   } catch (error) {
-    throw new LedgerError("usage", `stdin must hold one JSON object: ${(error as Error).message}`);
+    throw new LedgerError("usage", `${from === 0 ? "stdin" : from} must hold one JSON object: ${(error as Error).message}`);
   }
 }
 
@@ -98,6 +100,7 @@ async function main(argv: string[]): Promise<number> {
       at: { type: "string" },
       why: { type: "string" },
       item: { type: "string", multiple: true },
+      file: { type: "string" },
     },
   });
   const router = values.router ?? (process.env.AM_ROUTER || "router");
@@ -148,7 +151,9 @@ async function main(argv: string[]): Promise<number> {
       return name;
     };
     const fields = (): EntryFields => {
-      const json = positionals.includes("-") ? readJson() : {};
+      // --file: a watcher may only run commands that start with "am ledger inbox", so it cannot pipe or use a
+      // heredoc; it writes the JSON with its file tool instead. Deleted once recorded, so the next entry starts fresh.
+      const json = values.file !== undefined ? readJson(values.file) : positionals.includes("-") ? readJson() : {};
       const items = [...(Array.isArray(json.items) ? json.items : []), ...(values.item ?? [])].map(String);
       const pick = (key: string, flag: string | undefined) => (flag ?? (typeof json[key] === "string" ? json[key] : undefined));
       return {
@@ -172,11 +177,13 @@ async function main(argv: string[]): Promise<number> {
       }
       case "add": {
         const entry = addEntry(db, router, watcher(), fields());
+        if (values.file !== undefined) rmSync(values.file, { force: true });
         out(entry, `i${entry.id} recorded (${entry.priority})${entry.status === "read" ? "; its items were already read, so it is not listed" : ""}`);
         return 0;
       }
       case "update": {
         const entry = updateEntry(db, id(positionals.find((p) => p !== "-"), "i", "inbox update"), fields());
+        if (values.file !== undefined) rmSync(values.file, { force: true });
         out(entry, `i${entry.id} updated (${entry.priority}, ${entry.status})`);
         return 0;
       }

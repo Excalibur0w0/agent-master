@@ -212,6 +212,32 @@ test("am ledger inbox: a watcher records from stdin JSON; the router takes what 
   assert.equal((await run(["inbox", "add", "-"], { input: "not json", env: { AM_WATCHER: "chat" } })).code, 2);
 });
 
+test("am ledger inbox: a watcher can record from a JSON file, which goes once recorded", async () => {
+  // A watcher may only run commands that start with "am ledger inbox": no heredoc, no pipe. It writes the file instead.
+  const { dir, run } = await setup();
+  const file = join(dir, "entry.json");
+  const env = { AM_WATCHER: "chat" };
+  await writeFile(file, JSON.stringify({ priority: "normal", title: "周五前看下方案 $(id)", who: "李四", items: ["201"] }));
+  const added = await run(["inbox", "add", "--file", file], { env });
+  assert.equal(added.stdout, "i1 recorded (normal)\n", added.stderr);
+  assert.equal(existsSync(file), false, "the file goes, so the next entry starts from a new one");
+
+  await writeFile(file, JSON.stringify({ items: ["202"], priority: "urgent", why: "今天要" }));
+  assert.match((await run(["inbox", "update", "i1", "--file", file], { env })).stdout, /i1 updated \(urgent, open\)/);
+  assert.equal(existsSync(file), false);
+  assert.match((await run(["inbox", "list"])).stdout, /^i1  urgent  李四: 周五前看下方案 \$\(id\)  \[chat: 201, 202\]/);
+
+  // Refused: the file stays, to be fixed and passed again.
+  await writeFile(file, JSON.stringify({ priority: "low", title: "又一条", items: ["201"] }));
+  assert.notEqual((await run(["inbox", "add", "--file", file], { env })).code, 0, "201 is already recorded");
+  assert.ok(existsSync(file));
+  await writeFile(file, "not json");
+  const bad = await run(["inbox", "add", "--file", file], { env });
+  assert.equal(bad.code, 2);
+  assert.match(bad.stderr, /entry\.json must hold one JSON object/);
+  assert.match((await run(["inbox", "add", "--file", join(dir, "missing.json")], { env })).stderr, /missing\.json must hold one JSON object/);
+});
+
 test("am ledger import brings an old LEDGER.md over once", async () => {
   const { dir, run } = await setup();
   const file = join(dir, "LEDGER.md");

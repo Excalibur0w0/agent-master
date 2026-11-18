@@ -75,6 +75,8 @@ test("watchers are read from am.json and run read-only", async () => {
   assert.match(text, /You are a watcher\. You watch one source of incoming messages for the user, `chat` \(messages\)/);
   assert.match(text, /## Source: chat\n\n用中文写摘要。\n\nThe commands you can run \(Bash\), and nothing else:\n- `am ledger inbox \.\.\.`\n- `node \/.*\/ctx\.mjs \.\.\.`/);
   assert.doesNotMatch(text, /\{\{/);
+  assert.match(text, /`entry\.json`, then `am ledger inbox add --file entry\.json`/);
+  assert.doesNotMatch(text, /<<'EOF'|inbox (add|update \S+) - /, "a heredoc or stdin is denied in dontAsk mode: the watcher records from a file");
 
   const args = agentArgs(name, config);
   for (const flag of ["--restricted", "--strict-mcp-config"]) assert.ok(args.includes(flag), flag);

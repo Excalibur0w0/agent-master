@@ -285,7 +285,11 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 am watcher start          # 起 Claude 会话和 feed loop（缺哪个起哪个）；只配了一个时不用写名字
 am watcher status         # 会话、feed loop、待处理/排队数、摘要位置、最近日志
 am watcher stop           # 两个都停；摘要、规则和状态留着
+am watcher focus add <会话 id> [--auto] [--note 说明]   # 盯住一个会话（比如群）：那里别人发的每一条都交给 watcher，不只是 @你的
+am watcher focus remove <会话 id>                       # 不再盯；am watcher focus 列出盯着的
 ```
+
+**盯住和自动处理**：盯住的会话里，watcher 逐条判断是不是要你处理，闲聊不记。加了 `--auto` 的，要你处理的事（紧急或一般）记成 `auto` 条目，router 不等你开口就接手：`am ledger inbox take` 转成任务，再派一个 worker 去「准备」——查清楚要做什么，本地准备好答复、修复或回复草稿，但什么都不往外发（不发消息、不评论、不推送、不部署），发不发由你定。router 靠后台一直挂着的 `am ledger inbox wait` 得知新的 `auto` 和紧急条目（每条只报一次）；紧急的只告诉你一声。`auto` 条目在你别处读过后也不离开列表，直到被接手或被你排除。盯住的列表在 `~/.local/state/agent-master/watcher/<name>/focus.json`，poller 每次查之前读，改了不用重启。
 
 **什么时候起**：只在你运行 `am watcher start` 时起，不跟 router 一起起，开机也不自动起。机器重启或 tmux 被关掉之后，运行 `am resume --all`：am 先把 watcher 的 Claude 会话接回原来的会话，再运行 `am watcher resume` 拉起 feed loop（Claude 会话还没收到过消息、没有会话可接时，就新开一个）。你用 `am watcher stop` 停掉的不会被拉起。只想起 watcher 时，`am watcher start` 也行，它起的是新会话。
 
@@ -343,7 +347,7 @@ am ledger inbox dismiss i7        # 不用管
 
 - 任务：router 只写标题、在等谁（`--waiting`）、下一步（`--next`），可选备注（`--note`，追加一行）。`--worker` 只给名字，kind、预设、会话 ID、目录由 am 填，`show` / `list` 时再从 am 取实时状态（不在运行的从 `am list --saved` 取 stopped / lost / exited），会话 ID 变了会写回。
 - 在办不设上限；排队、暂停留给你自己决定用不用。（早先版本的 `"ledger": {"maxActive": N}` 已不再读取。）
-- 待过目：watcher 先把 `{json}` 写进文件，再用 `am ledger inbox add --file <文件>` 写（记下后 am 删掉这个文件；人手动记也可以用 `add -` 从 stdin 读），字段 `priority`（urgent / normal / low）、`title`、`who`、`where`、`at`、`why`、`items`（来源的消息 id，一条消息只能属于一个条目）。一个条目的消息你都在别处读过了，它就自动离开列表；你没管、它还在的，就留在「For review」里。
+- 待过目：watcher 先把 `{json}` 写进文件，再用 `am ledger inbox add --file <文件>` 写（记下后 am 删掉这个文件；人手动记也可以用 `add -` 从 stdin 读），字段 `priority`（urgent / normal / low）、`title`、`who`、`where`、`at`、`why`、`items`（来源的消息 id，一条消息只能属于一个条目）。一个条目的消息你都在别处读过了，它就自动离开列表（`auto` 条目除外）；你没管、它还在的，就留在「For review」里。`"auto": true`（或 `--auto`）标记要 router 立刻接手的条目；`am ledger inbox wait` 给 router 在后台用，有它还没听说过的 `auto` 或紧急条目时返回。
 - `am ledger import <LEDGER.md>`：把旧的 markdown 台账导进来（`am router start` 会自动做一次），标题重复的跳过；额外的行（Done so far、Reports 等）和旧的 Status 都进备注，不丢内容。
 
 ## shell-ask

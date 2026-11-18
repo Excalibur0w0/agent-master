@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { loadState } from "./feed.ts";
-import { agentArgs, configPath, deskDir, loadWatchers, logFile, pick, routerOf, rulesFile, stateFile, UsageError, watcherDir, writeHome, type WatcherConfig } from "./home.ts";
+import { agentArgs, configPath, deskDir, focusFile, loadFocus, loadWatchers, logFile, pick, routerOf, rulesFile, saveFocus, stateFile, UsageError, watcherDir, writeHome, type Focus, type WatcherConfig } from "./home.ts";
 import { run, withoutContract } from "./run.ts";
 
 const USAGE = `am watcher — a long-running Claude session that watches a message source and puts what needs you up for
@@ -17,6 +17,12 @@ review in the ledger (am ledger show, "For review"; am ledger inbox)
   am watcher stop [name]   Stop both; its entries, rules and state stay for the next start
   am watcher status [name] Its Claude session and feed loop, what is pending or queued, what is up for review
   am watcher list          The watchers configured in your am.json
+  am watcher focus [name] [add <id> [--auto] [--note TEXT] | remove <id>]
+                           Conversations to watch closely (no action: list them). The poller reports every new
+                             message there from others, not only mentions; <id> is the source's id for the
+                             conversation, such as a group id. --auto: matters there that need you go to the router
+                             at once, which hands each to a worker to prepare an answer, without waiting for you.
+                             Takes effect on the poller's next look; no restart
   am watcher resume        Bring back the watchers that were running when their tmux server went away (reboot,
                              crash); am resume --all runs this once it has resumed the agents. A watcher stopped
                              with am watcher stop stays stopped. Not started at login: after a reboot, run
@@ -171,9 +177,41 @@ async function status(name: string | undefined): Promise<number> {
       `${chosen}: Claude session ${agent ? `${agent.state}${agent.detail ? ` (${agent.detail})` : ""}` : "not running"}; feed loop ${feeding(chosen) ? "running" : "not running"}`,
       `feed: ${state.pending.length} pending, ${delivered} given to the watcher, ${state.queue.items.length} new waiting for it`,
       `up for review in ${routerOf(config)}'s ledger: ${review}; see am ledger show`,
+      `watched closely: ${(await loadFocus(chosen)).map((f) => `${f.id}${f.auto ? " (auto)" : ""}`).join(", ") || "none"}`,
       `rules: ${rulesFile(chosen)}`,
       ...(tail.length ? ["log:", ...tail.map((line) => `  ${line}`)] : []),
     ].join("\n") + "\n",
+  );
+  return 0;
+}
+
+const describeFocus = (f: Focus) => `${f.id}${f.auto ? "  auto" : ""}  since ${f.since.slice(0, 16).replace("T", " ")}${f.note ? `  ${f.note}` : ""}`;
+
+async function focus(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { auto: { type: "boolean" }, note: { type: "string" } } });
+  const actions = ["add", "remove"];
+  const [name, action, id, ...extra] = actions.includes(positionals[0]) ? [undefined, ...positionals] : positionals;
+  if (extra.length) throw new UsageError(`unexpected argument: ${extra[0]}`);
+  const [chosen] = pick(await loadWatchers(), name);
+  const conversations = await loadFocus(chosen);
+  if (action === undefined) {
+    process.stdout.write(conversations.length ? `${chosen} watches closely:\n${conversations.map((f) => `  ${describeFocus(f)}`).join("\n")}\n` : `${chosen} watches no conversation closely\n`);
+    return 0;
+  }
+  if (!actions.includes(action)) throw new UsageError(`unknown focus action: ${action} (add or remove)`);
+  if (!id) throw new UsageError(`am watcher focus ${action} needs the conversation's id`);
+  if (action === "remove") {
+    if (!conversations.some((f) => f.id === id)) throw new UsageError(`${chosen} does not watch ${id} closely`);
+    await saveFocus(chosen, conversations.filter((f) => f.id !== id));
+    process.stdout.write(`${chosen} no longer watches ${id} closely; from now on only messages that mention you reach it from there\n`);
+    return 0;
+  }
+  const entry: Focus = { id, ...(values.auto ? { auto: true } : {}), ...(values.note ? { note: values.note } : {}), since: new Date().toISOString() };
+  await saveFocus(chosen, [...conversations.filter((f) => f.id !== id), entry]);
+  process.stdout.write(
+    `${chosen} now watches ${id} closely: every new message there from others reaches it` +
+      (values.auto ? "; matters that need you go to the router at once (auto), which hands each to a worker to prepare an answer" : "") +
+      `\n(${focusFile(chosen)}; the poller picks it up on its next look)\n`,
   );
   return 0;
 }
@@ -186,6 +224,7 @@ async function list(): Promise<number> {
 }
 
 async function main([command, ...rest]: string[]): Promise<number> {
+  if (command === "focus") return focus(rest);
   const { positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} });
   if (positionals.length > 1) throw new UsageError(`unexpected argument: ${positionals[1]}`);
   const [name] = positionals;

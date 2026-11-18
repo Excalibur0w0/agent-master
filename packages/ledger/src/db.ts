@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS inbox (
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'read', 'dismissed', 'taken')),
   task_id INTEGER REFERENCES tasks (id),
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  auto INTEGER NOT NULL DEFAULT 0,
+  noticed_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS inbox_by_router ON inbox (router, status);
 CREATE TABLE IF NOT EXISTS inbox_items (
@@ -75,7 +77,21 @@ export function openLedger(path = ledgerPath()): DatabaseSync {
   // Router, watchers and the user write from separate processes.
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA);
+  addColumns(db, "inbox", { auto: "INTEGER NOT NULL DEFAULT 0", noticed_at: "INTEGER" });
   return db;
+}
+
+/** Columns added after a table was first created; another process may add them at the same moment. */
+function addColumns(db: DatabaseSync, table: string, columns: Record<string, string>): void {
+  const have = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
+  for (const [name, type] of Object.entries(columns)) {
+    if (have.has(name)) continue;
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+    } catch (error) {
+      if (!/duplicate column/i.test((error as Error).message)) throw error;
+    }
+  }
 }
 
 /** Runs `work` in one write transaction: a check and the write it allows cannot be split by another process. */
@@ -242,6 +258,10 @@ export interface Entry {
   task_id: number | null;
   created_at: number;
   updated_at: number;
+  /** From a conversation the user wants handled without waiting for them: the router hands it to a worker at once. */
+  auto: boolean;
+  /** When am ledger inbox wait reported it to the router. */
+  noticed_at: number | null;
   items: string[];
 }
 
@@ -254,6 +274,8 @@ export interface EntryFields {
   why?: string;
   /** Source item ids this entry covers; on update, added to the ones it has. */
   items?: string[];
+  /** Hand it to a worker without waiting for the user (see Entry.auto). */
+  auto?: boolean;
 }
 
 function itemsOf(db: DatabaseSync, entry: number): string[] {
@@ -261,15 +283,32 @@ function itemsOf(db: DatabaseSync, entry: number): string[] {
 }
 
 export function getEntry(db: DatabaseSync, id: number): Entry {
-  const row = db.prepare("SELECT * FROM inbox WHERE id = ?").get(id) as unknown as Omit<Entry, "items"> | undefined;
+  const row = db.prepare("SELECT * FROM inbox WHERE id = ?").get(id) as unknown as EntryRow | undefined;
   if (!row) throw new LedgerError("not_found", `no inbox entry i${id}`);
-  return { ...row, items: itemsOf(db, id) };
+  return { ...row, auto: Boolean(row.auto), items: itemsOf(db, id) };
 }
 
 export function listEntries(db: DatabaseSync, router: string, all = false): Entry[] {
   const order = "ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, id DESC";
-  const rows = db.prepare(`SELECT * FROM inbox WHERE router = ? ${all ? "" : "AND status = 'open'"} ${order}`).all(router) as unknown as Array<Omit<Entry, "items">>;
-  return rows.map((row) => ({ ...row, items: itemsOf(db, row.id) }));
+  const rows = db.prepare(`SELECT * FROM inbox WHERE router = ? ${all ? "" : "AND status = 'open'"} ${order}`).all(router) as unknown as EntryRow[];
+  return rows.map((row) => ({ ...row, auto: Boolean(row.auto), items: itemsOf(db, row.id) }));
+}
+
+type EntryRow = Omit<Entry, "items" | "auto"> & { auto: number };
+
+/**
+ * The open entries the router has not been told about that need it now: the ones to hand to a worker at once
+ * (auto) and the urgent ones to tell the user about. Each is reported once.
+ */
+export function noticeEntries(db: DatabaseSync, router: string): Entry[] {
+  return transaction(db, () => {
+    const ids = (
+      db.prepare("SELECT id FROM inbox WHERE router = ? AND status = 'open' AND noticed_at IS NULL AND (auto = 1 OR priority = 'urgent') ORDER BY id").all(router) as Array<{ id: number }>
+    ).map((r) => r.id);
+    const at = now();
+    for (const id of ids) db.prepare("UPDATE inbox SET noticed_at = ? WHERE id = ?").run(at, id);
+    return ids.map((id) => getEntry(db, id));
+  });
 }
 
 function checkPriority(priority: unknown): Priority {
@@ -285,12 +324,15 @@ function attachItems(db: DatabaseSync, entry: number, watcher: string, items: st
   }
 }
 
-/** An entry whose items the user has all read elsewhere leaves the list. */
+/**
+ * An entry whose items the user has all read elsewhere leaves the list. An auto entry stays: the user asked
+ * for it to be handled whether or not they glance at the conversation.
+ */
 function settleRead(db: DatabaseSync, entry: number): void {
   const unread = db
     .prepare("SELECT count(*) AS n FROM inbox_items i LEFT JOIN read_items r ON r.watcher = i.watcher AND r.item = i.item WHERE i.entry = ? AND r.item IS NULL")
     .get(entry) as { n: number };
-  if (unread.n === 0) db.prepare("UPDATE inbox SET status = 'read', updated_at = ? WHERE id = ? AND status = 'open'").run(now(), entry);
+  if (unread.n === 0) db.prepare("UPDATE inbox SET status = 'read', updated_at = ? WHERE id = ? AND status = 'open' AND auto = 0").run(now(), entry);
 }
 
 export function addEntry(db: DatabaseSync, router: string, watcher: string, fields: EntryFields): Entry {
@@ -300,8 +342,8 @@ export function addEntry(db: DatabaseSync, router: string, watcher: string, fiel
   return transaction(db, () => {
     const at = now();
     const result = db
-      .prepare("INSERT INTO inbox (router, watcher, priority, title, who, place, at, why, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(router, watcher, priority, fields.title!.trim(), fields.who ?? "", fields.where ?? "", fields.at ?? "", fields.why ?? "", at, at);
+      .prepare("INSERT INTO inbox (router, watcher, priority, title, who, place, at, why, auto, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(router, watcher, priority, fields.title!.trim(), fields.who ?? "", fields.where ?? "", fields.at ?? "", fields.why ?? "", fields.auto ? 1 : 0, at, at);
     const id = Number(result.lastInsertRowid);
     attachItems(db, id, watcher, fields.items!.map(String));
     settleRead(db, id);
@@ -312,16 +354,20 @@ export function addEntry(db: DatabaseSync, router: string, watcher: string, fiel
 export function updateEntry(db: DatabaseSync, id: number, fields: EntryFields): Entry {
   return transaction(db, () => {
     const entry = getEntry(db, id);
-    db.prepare("UPDATE inbox SET priority = ?, title = ?, who = ?, place = ?, at = ?, why = ?, updated_at = ? WHERE id = ?").run(
+    db.prepare("UPDATE inbox SET priority = ?, title = ?, who = ?, place = ?, at = ?, why = ?, auto = ?, updated_at = ? WHERE id = ?").run(
       fields.priority ? checkPriority(fields.priority) : entry.priority,
       fields.title?.trim() || entry.title,
       fields.who ?? entry.who,
       fields.where ?? entry.place,
       fields.at ?? entry.at,
       fields.why ?? entry.why,
+      (fields.auto ?? entry.auto) ? 1 : 0,
       now(),
       id,
     );
+    // Newly marked auto: the router hears about it again (it may have been told only that it was urgent),
+    // and a read entry comes back, since auto ones stay until handled.
+    if (fields.auto && !entry.auto) db.prepare("UPDATE inbox SET noticed_at = NULL, status = CASE status WHEN 'read' THEN 'open' ELSE status END WHERE id = ?").run(id);
     if (fields.items?.length) {
       attachItems(db, id, entry.watcher, fields.items.map(String));
       // New unread items reopen an entry the user had read.

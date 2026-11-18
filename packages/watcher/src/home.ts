@@ -1,5 +1,5 @@
 // A watcher's configuration (the user's am.json, "watchers") and its files.
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,6 +86,36 @@ export const instructionsFile = (name: string) => join(watcherDir(name), "INSTRU
 export const stateFile = (name: string) => join(watcherDir(name), "state.json");
 export const logFile = (name: string) => join(watcherDir(name), "feed.log");
 export const rulesFile = (name: string) => join(deskDir(name), "RULES.md");
+export const focusFile = (name: string) => join(watcherDir(name), "focus.json");
+
+/**
+ * A conversation the user asked the watcher to watch closely. The poller reads focus.json from $AM_WATCHER_DIR
+ * on every look: it reports every new message there from others, not only mentions, marked "focus": true, and
+ * "auto": true when the user wants matters from it handled without waiting for them.
+ */
+export interface Focus {
+  /** The source's id for the conversation, such as a group id. */
+  id: string;
+  auto?: boolean;
+  note?: string;
+  since: string;
+}
+
+export async function loadFocus(name: string): Promise<Focus[]> {
+  try {
+    const value = JSON.parse(await readFile(focusFile(name), "utf8"));
+    return Array.isArray(value?.conversations) ? value.conversations.filter((c: Focus) => typeof c?.id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveFocus(name: string, conversations: Focus[]): Promise<void> {
+  await mkdir(watcherDir(name), { recursive: true });
+  const tmp = `${focusFile(name)}.${process.pid}.tmp`;
+  await writeFile(tmp, `${JSON.stringify({ conversations }, null, 2)}\n`);
+  await rename(tmp, focusFile(name));
+}
 
 /** The ledger its entries go to. */
 export const routerOf = (config: WatcherConfig) => config.router ?? "router";

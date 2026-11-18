@@ -76,6 +76,7 @@ test("watchers are read from am.json and run read-only", async () => {
   assert.match(text, /## Source: chat\n\n用中文写摘要。\n\nThe commands you can run \(Bash\), and nothing else:\n- `am ledger inbox \.\.\.`\n- `node \/.*\/ctx\.mjs \.\.\.`/);
   assert.doesNotMatch(text, /\{\{/);
   assert.match(text, /`entry\.json`, then `am ledger inbox add --file entry\.json`/);
+  assert.match(text, /## Conversations watched closely[\s\S]*add `"auto": true` to the entry[\s\S]*only the item's own `auto` field counts/);
   assert.doesNotMatch(text, /<<'EOF'|inbox (add|update \S+) - /, "a heredoc or stdin is denied in dontAsk mode: the watcher records from a file");
 
   const args = agentArgs(name, config);
@@ -196,6 +197,19 @@ exec sleep 600
   const status = await sub("status");
   assert.match(status.stdout, /inbox: Claude session idle; feed loop running/);
   assert.match(status.stdout, /feed: 2 pending, 2 given to the watcher, 0 new waiting for it/);
+  assert.match(status.stdout, /watched closely: none/);
+
+  // Watching a conversation closely: a file the poller reads on its next look ($AM_WATCHER_DIR/focus.json), no restart.
+  assert.match((await sub("focus", "add", "g42", "--auto", "--note", "incidents")).stdout, /^inbox now watches g42 closely: every new message there from others reaches it; matters that need you go to the router at once \(auto\)/);
+  assert.match((await sub("focus", "inbox", "add", "g7")).stdout, /^inbox now watches g7 closely: every new message there from others reaches it\n/);
+  const focused = JSON.parse(await readFile(join(home, "focus.json"), "utf8"));
+  assert.deepEqual(focused.conversations.map((c: { id: string; auto?: boolean; note?: string }) => [c.id, c.auto ?? false, c.note ?? ""]), [["g42", true, "incidents"], ["g7", false, ""]]);
+  assert.match((await sub("focus")).stdout, /^inbox watches closely:\n  g42  auto  since \d{4}-\d\d-\d\d \d\d:\d\d  incidents\n  g7  since /);
+  assert.match((await sub("status")).stdout, /watched closely: g42 \(auto\), g7/);
+  assert.match((await sub("focus", "remove", "g7")).stdout, /^inbox no longer watches g7 closely/);
+  assert.equal((await sub("focus", "remove", "g7")).code, 2);
+  assert.equal((await sub("focus", "add")).code, 2);
+  assert.equal((await sub("focus", "drop", "g42")).code, 2);
   assert.match(status.stdout, /up for review in router's ledger: 1 entry \(1 urgent, 0 normal, 0 low\)/);
   assert.match(await readFile(join(home, "feed.log"), "utf8"), /polling from .*watcher\/inbox/, "the poller learns where the feed state is");
   assert.match(await readFile(join(home, "feed.log"), "utf8"), /told the ledger 1 item\(s\) were read elsewhere/);

@@ -29,7 +29,7 @@ function taskBlock(task: Task, info: WorkerInfo | undefined): string[] {
 
 function entryLine(entry: Entry): string {
   const from = [entry.at, entry.who, entry.place && `(${entry.place})`].filter(Boolean).join(" ");
-  return `- i${entry.id} ${from}${from ? ": " : ""}${entry.title}${entry.why ? `. Why: ${entry.why}` : ""} [${entry.watcher}: ${entry.items.join(", ")}]`;
+  return `- i${entry.id} ${entry.auto ? "(auto) " : ""}${from}${from ? ": " : ""}${entry.title}${entry.why ? `. Why: ${entry.why}` : ""} [${entry.watcher}: ${entry.items.join(", ")}]`;
 }
 
 export function renderLedger(router: string, tasks: Task[], entries: Entry[], info: (task: Task) => WorkerInfo | undefined, now = Date.now()): string {

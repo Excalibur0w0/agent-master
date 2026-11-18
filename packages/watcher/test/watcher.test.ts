@@ -172,7 +172,7 @@ exec sleep 600
   const start = calls.find((c) => c.startsWith("start "))!;
   assert.equal(
     start,
-    `start inbox --kind claude --cwd ${home}/desk --env AM_WATCHER_DIR=${home} --env AM_WATCHER=inbox --env AM_ROUTER=router -- --restricted --strict-mcp-config --permission-mode dontAsk --append-system-prompt-file ${home}/INSTRUCTIONS.md --tools Read,Grep,Glob,Edit,Write,Bash --allowedTools Read Grep Glob Edit Write Bash(am ledger inbox:*) Bash(node /x/context.mjs:*)|contract=`,
+    `start inbox --kind claude --cwd ${home}/desk --env AM_WATCHER_DIR=${home} --env AM_WATCHER=inbox --env AM_ROUTER=router --env DISABLE_AUTOUPDATER=1 -- --restricted --strict-mcp-config --permission-mode dontAsk --append-system-prompt-file ${home}/INSTRUCTIONS.md --tools Read,Grep,Glob,Edit,Write,Bash --allowedTools Read Grep Glob Edit Write Bash(am ledger inbox:*) Bash(node /x/context.mjs:*)|contract=`,
     "no worker contract for the watcher",
   );
   assert.match(await readFile(join(home, "INSTRUCTIONS.md"), "utf8"), /## Source: inbox\n\nSource notes\./);

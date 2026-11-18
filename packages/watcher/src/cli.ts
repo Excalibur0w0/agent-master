@@ -84,6 +84,10 @@ async function bringUp(chosen: string, config: WatcherConfig, agent = agentState
         // Its am ledger inbox commands record entries as this watcher, in this router's ledger.
         "--env", `AM_WATCHER=${chosen}`,
         "--env", `AM_ROUTER=${routerOf(config)}`,
+        // --restricted skips the user's settings files, and with them an "env": {"DISABLE_AUTOUPDATER": "1"}
+        // there: a watcher then updated Claude Code for the whole machine about a minute after it started.
+        // A read-only watcher installs nothing; the user's own sessions still update as their settings say.
+        "--env", "DISABLE_AUTOUPDATER=1",
         "--", ...agentArgs(chosen, config),
       ],
       false,

@@ -60,7 +60,9 @@ am stop reviewer
 | `am list` / `am status <name>` | 状态：`starting` `idle` `working` `blocked` `stalled` `exited` `unknown`；`detail` 说明在等什么、为什么卡住 |
 | `am list --saved` | am 记得的所有 agent：运行中、`stopped`（am stop 关的）、`exited`（自己退出的）、`lost`（随 tmux 或机器重启丢的） |
 | `am prompt <name> <text\|-> [--wait] [--timeout]` | 粘贴 + 回车，并确认对方收到；blocked / working 时拒绝；带合同的 agent 自动附上合同 |
-| `am wait <name> [--until idle,blocked,stalled] [--read]` | 等状态；同一次卡住只报一次；`--read` 在 idle 时把最终回复一起打出来，省一次 `am read` |
+| `am prompt <name> <text\|-> --queue [--after JSON]` | 空闲就马上发，忙就排队，等它空下来按顺序自动送达；见下文「给忙着的 agent 排队」 |
+| `am queue <name> [--clear]` | 看排队的和没送达的 prompt；`--clear` 丢掉 |
+| `am wait <name> [--until idle,blocked,stalled] [--read] [--turn]` | 等状态；同一次卡住只报一次；`--read` 在 idle 时把最终回复一起打出来，省一次 `am read`；`--turn` 一轮结束就返回，不等后台任务 |
 | `am read <name>` | 最近一轮的最终回复 |
 | `am approve <name> [--always]` / `am deny <name>` | 处理权限请求（`--always` 仅 opencode） |
 | `am interrupt <name>` / `am keys <name> <key>...` / `am stop <name>` | 中断 / 原始按键 / 关闭（am 仍记得它，可以 resume） |
@@ -127,6 +129,25 @@ agent 看起来还在干活、其实不会再有进展的情况，am 报成 `sta
 - 因错误结束的一轮（前三种）已经回到输入框，`am prompt` 可以直接发「继续」；「长时间没有输出」时它可能还在跑很久的命令，`am prompt` 照样拒绝，可以 `am open` 看一眼或 `am interrupt`。
 - Claude 的 API 错误要在本轮最后保留 20 秒以上才算（安全分类拦截后 Claude 可能自己接着做）；Codex 漏掉 Stop hook 但 `task_complete` 已写出时直接报 idle。
 - dsh 和 OpenCode 1.x 目前识别不了这些原因，也不做「长时间没有输出」的判断。
+
+### 后台任务（Claude）
+
+Claude 一轮结束时，它起的后台任务（`run_in_background`、后台子 agent 等）可能还在跑，跑完它会自己接着做。am 从 Stop 事件的 `background_tasks` 里知道有哪些：
+
+- 本次请求起的后台任务没跑完，状态是 `working`（detail：`turn ended, waiting for 1 background task: …`），`am wait` 等到它接着做完那一轮才返回，`--read` 拿到的是最终回复。这期间照样可以 `am prompt`。
+- 后台任务超过 `stallAfterMinutes`（默认 15 分钟）还没跑完，就当它是不会结束的（比如 dev server），按 `idle` 处理，detail 里仍然写着还在跑什么。
+- 之前请求留下的后台任务不算，不会挡住以后的 `am wait`。
+- 本来就是让它起一个常驻服务，用 `am wait --turn`：一轮结束就返回。
+
+### 给忙着的 agent 排队（`am prompt --queue`）
+
+`am prompt` 会拒绝正在干活的 agent。加 `--queue`：空闲就马上发，忙就排队，等它空下来按顺序自动送达；停在首次启动弹窗（信任目录、登录）上的，弹窗过了再送。
+
+- 排队的内容存在 `~/.local/state/agent-master/queue/<name>/`（权限 600），由一个脱离终端的 `am deliver <name>` 送，命令返回、会话关掉都不影响；送完它就退出。
+- agent 要连续空闲 5 秒才送，这样正在等上一轮的 `am wait --read` 来得及读到那一轮的回复。`am wait` 会等它开始之前已经排着的，不等之后才排的。
+- 每条先认领再发，不会发两次。没得到确认的留着不重发（`am queue <name>` 能看到原因），排在它后面的也先停住。
+- 队列跟着这一次启动走：`am resume` 会带上，重新 `am start` 一个同名的不会收到。
+- `--after '["ledger","update","3","--waiting","the worker"]'`：对方收到后再跑一条 am 命令。
 
 ### 恢复（`am resume`）
 
@@ -204,7 +225,7 @@ hook（dsh 是插件）把状态写在 agent 所在 pane 的 `@am_*` 选项上�
 
 几个保证不误操作的细节：
 - **启动**：agent 进程先停在 `tmux wait-for <通道>` 上，`am` 按 pane id 写好记录后发信号放行（信号先到也不会丢），hook 不可能先于记录运行；`am` 中途退出时，pane 60 秒后自行退出，不会启动一个没有记录的 agent。同名检查和建 pane 在一把全局启动锁里完成。
-- **发送**：每个 agent 一把发送锁（tmux 内原子加锁，120 秒过期）；每次按键都是一条 tmux 内的 `if-shell`，锁不在自己手里就不发。「已收到」只看 `UserPromptSubmit` 原子自增的 `@am_seq`（opencode 看服务端的 busy 会话）；没确认就报 `prompt_stalled`，**从不重发**，避免同一个任务被执行两次。
+- **发送**：每个 agent 一把发送锁（tmux 内原子加锁，120 秒过期）；每次按键都是一条 tmux 内的 `if-shell`，锁不在自己手里就不发。「已收到」只看 `UserPromptSubmit` 原子自增的 `@am_seq`（Claude 自己的「后台任务结束」通知不算；opencode 看服务端的 busy 会话）；没确认就报 `prompt_stalled`，**从不重发**，避免同一个任务被执行两次。
 - **不让弹窗吃掉按键**：am 启动的 Codex 关掉启动时的更新检查（`check_for_update_on_startup=false`），opencode 关掉自动更新（`OPENCODE_DISABLE_AUTOUPDATE=1`）。否则更新对话框会在任意时刻弹出，`am prompt` 的 Enter 会替你确认升级。
 - **权限**：`PermissionRequest` 不带 `tool_use_id`，用「工具名 + 输入」的校验和与 `PostToolUse` 配对（Codex 给 Bash 输入额外加的 `description` 会先去掉），并行工具完成不会误清 blocked；`am approve` 只在仍是同一个请求时把状态改成 working。dsh 的审批自带 id，按 TUI 弹出的顺序逐个记录。
 - **调试**：`am start ... --env AM_HOOK_LOG=/tmp/hooks.ndjson` 会把 hook 收到的原始输入逐条记下来。
@@ -256,7 +277,7 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 **台账**：在办的事记在 `am ledger`（SQLite，见下文），不在 router 的上下文里。router 每件事只写标题（就是 `Q:` 那行）、在等谁、下一步，worker 的 kind、预设、会话 ID 和运行状态由 am 带出。规则写在 `packages/router/ROUTER.md` 里：
 
 - router 在派活、收到结果、worker 卡住或需要决定、你做出决定、任务关闭时，当轮就更新台账，再回复你。
-- 新请求交给新 worker 用一条命令：`am router dispatch <worker> - --title "<标题>" --profile <预设> --cwd <目录> --next "<下一步>" <<'EOF' … EOF`，依次 `am start`、`am prompt`（任务从 stdin 读）、`am ledger add`（默认在等 worker）。原来要 router 来回三次，现在一次。worker 起不来就什么都不记；起来了但没确认收到任务，台账照记，改成在等你，命令报错退出。worker 照样从 router 的 `$AM_CONTRACT` 拿到合同。
+- 新请求交给新 worker 用一条命令：`am router dispatch <worker> - --title "<标题>" --profile <预设> --cwd <目录> --next "<下一步>" <<'EOF' … EOF`，依次 `am start`、`am prompt`（任务从 stdin 读）、`am ledger add`（默认在等 worker）。原来要 router 来回三次，现在一次。worker 起不来就什么都不记；起来了但没确认收到任务，台账照记，改成在等你，命令报错退出；停在首次启动的弹窗（信任目录、登录）上，台账立刻记下「等你去点」，任务排进队列，你点完弹窗后自动送达，台账再改成在等 worker。worker 照样从 router 的 `$AM_CONTRACT` 拿到合同。
 - router 后台等 worker 用 `am wait <name> --read`：worker 空闲时，等待命令的输出里直接带着它的最终回复，router 读这份输出就行，不用再跑 `am read`。注意 Claude Code 后台命令结束时的通知只给输出文件路径、不带内容，所以 router 还是要读一次文件，省下的是一个 am 进程（约 1 秒），不是一次模型往返。
 - 在办几件不设上限：新请求直接开始。排队（`--queue`）、先放一边（`am ledger pause`，并 `am stop` 它的 worker，之后 `am resume` 接回原会话）、重新开始（`am ledger start`）都只在你说的时候做。
 - 交付结果不等于结束：只有你明确说某件事结束了，它才 `am ledger close`、`am stop` 那个 worker。
@@ -343,8 +364,9 @@ am watcher focus remove <会话 id>                       # 不再盯；am watch
 router 的在办事项和 watcher 的待过目消息都在一个 SQLite 文件里：`~/.local/state/agent-master/ledger.db`（遵循 `XDG_STATE_HOME`，可用 `AM_LEDGER_DB` 换位置）。多进程同时写安全（WAL + 写事务）。每个 router 一本账（`--router`，默认 `$AM_ROUTER`，再没有就是 `router`）。
 
 ```sh
+am ledger show 3                  # 只看 #3 这一件（可以给多个编号，暂停和已关闭的也能看）
 am ledger show                    # markdown 视图：在办、排队、待过目，worker 的实时状态由 am 带出
-am ledger list                    # 在办和排队的，一行一件
+am ledger list                    # 在办和排队的，一行一件，带「多久没动」（UPDATED）
 am ledger list --paused           # 只看暂停的（--all：全部，含暂停和已关闭的）
 am ledger add "修登录" --worker fix-login --waiting "the worker" --next "汇报后转告用户"
 am ledger update 3 --waiting "the user: 选方案" --note "worker 给了两个方案"

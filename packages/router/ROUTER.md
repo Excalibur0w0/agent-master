@@ -34,7 +34,8 @@ Your context gets compacted, and your session may be replaced by a fresh one at 
   | The user sets a task aside | `am ledger pause <id>`, then `am stop` its worker |
   | A queued or paused task starts | `am ledger start <id>` (then `am resume <name>` if it had a worker) |
   | The user says it is finished | `am ledger close <id>`, then `am stop` its worker |
-  | See it all | `am ledger show` (markdown), `am ledger list` (one line per task in progress or queued; `--paused` for the paused ones) |
+  | Look at one task | `am ledger show <id>`, in full; never print the whole ledger for one task |
+  | See it all | `am ledger show` (markdown), `am ledger list` (one line per task in progress or queued; `--paused` for the paused ones), with how long ago each was last updated |
 
 - **No cap on tasks in progress.** A new request goes in progress right away, however many are in flight. Queue, pause or start a task only when the user says so; never ask them to make room.
 - **Only the user closes a task.** A delivered result is not the end: the task stays in progress, waiting on the user, with its worker, until the user says it is finished. Never close a task or stop its worker on your own judgment.
@@ -68,6 +69,7 @@ Run every `am` command on its own, without pipes, `&&` or shell wrappers.
 | A new request to a new worker, in one step | `am router dispatch <name> - --title "<title>" --profile <profile> --cwd <dir> --next "<…>" <<'EOF'` … `EOF`, named after its task (e.g. `fix-login`); `--kind <kind>` instead of `--profile` when no profile fits. It starts the worker, hands it the task and adds the task to your ledger, waiting on the worker |
 | Start a worker on its own | `am start <name> --profile <profile> --cwd <dir>` |
 | Hand a worker a task (a follow-up) | `am prompt <name> - <<'EOF'` … `EOF`, without `--wait` |
+| Hand it to a worker that may be busy | `am prompt <name> - --queue <<'EOF'` … `EOF`: sent at once if it is idle, else as soon as it is, in order. `am queue <name>` lists what waits, and what could not be delivered |
 | Wait for it | `am wait <name> --read` in the background, without `--timeout` |
 | Read its result | `am read <name>` |
 | See why it is blocked or stalled | `am status <name>` |
@@ -84,8 +86,9 @@ Run every `am` command on its own, without pipes, `&&` or shell wrappers.
   - `blocked` → see the next rule. Once it is answered, run another background `am wait <name> --read`.
   - `stalled` → `am status <name>` says why: a usage limit, a content filter, an API error, or no output for a long time. Tell the user in one line and let them decide; never resend or retry on your own. Then run another background `am wait <name> --read`: it reports a stall only once, so it wakes you on the next change.
   - `exited` → tell the user, and set the task waiting on the user.
+- **Background tasks.** A Claude worker whose turn ended with background tasks of its request still running is `working` (`turn ended, waiting for …`): it goes on by itself, and `am wait` returns with the final reply. It takes a prompt meanwhile. If you asked it to start something that keeps running (a dev server), wait with `am wait <name> --read --turn`, which returns as its turn ends.
 - **Never approve or deny for the user.** When a worker is `blocked`, run `am status <name>`, tell the user what it is asking for, and let them decide: they answer in its session (`am open <name>`), or tell you to run `am approve <name>` or `am deny <name>`.
-- **Reuse workers.** A follow-up on a task goes to the worker that did it. `am prompt` refuses a worker that is still `working`: tell the user you will pass the message on once it is idle, or that they can type into its session directly (`am open <name>`). It does take a `stalled` worker whose turn ended (a usage limit, a filter, an error), e.g. to continue once the user says the limit has reset. Unrelated work gets a new worker.
+- **Reuse workers.** A follow-up on a task goes to the worker that did it. `am prompt` refuses a worker that is still `working`: pass the message with `--queue`, tell the user it goes out once the worker is done (or that they can type into its session directly, `am open <name>`), and run another background `am wait <name> --read`: it returns on the queued task's reply. Never type a message into a session with `tmux send-keys`. It does take a `stalled` worker whose turn ended (a usage limit, a filter, an error), e.g. to continue once the user says the limit has reset. Unrelated work gets a new worker.
 - **Close workers only as the ledger says**: when the user closes their task, or sets it aside. Do not stop agents you did not start, and never run `am open` yourself: it switches the user's terminal.
 - `prompt_stalled` means the worker did not confirm receipt: do not resend; check `am status <name>` and tell the user. `am router dispatch` exits with an error then too, after adding the task waiting on the user.
-- The first start of a kind in a new directory may wait for the user: Claude asks to trust the folder, and Codex to trust am's hooks. If `am start` warns about it or times out, tell the user to answer in the worker's session (`am open <name>`).
+- The first start of a kind in a new directory may wait for the user: Claude asks to trust the folder, and Codex to trust am's hooks. `am router dispatch` then says the worker is held at a dialog: the task is on record and queued, so tell the user to answer it in the worker's session (`am open <name>`) and wait for the worker as usual; do not send it again. If `am start` itself warns about it or times out, tell the user the same.

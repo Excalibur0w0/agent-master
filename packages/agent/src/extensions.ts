@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** am's own commands; an extension cannot take one of these names. */
-export const BUILTIN = new Set(["start", "profiles", "list", "open", "status", "prompt", "wait", "read", "approve", "deny", "interrupt", "keys", "stop", "resume", "forget", "install", "uninstall", "help", "-h", "--help"]);
+export const BUILTIN = new Set(["start", "profiles", "list", "open", "status", "prompt", "queue", "deliver", "wait", "read", "approve", "deny", "interrupt", "keys", "stop", "resume", "forget", "install", "uninstall", "help", "-h", "--help"]);
 
 const PACKAGES = fileURLToPath(new URL("../../", import.meta.url));
 

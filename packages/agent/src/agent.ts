@@ -8,6 +8,7 @@ import { quoteArg, type Tmux } from "@agent-master/tmux";
 import { config, contractPath, DEFAULT_STALL_AFTER_MINUTES, findProfile, loadConfig, profileLaunch } from "./config.ts";
 import { AmError, DRIVERS, poll, sleep } from "./drivers/index.ts";
 import type { StallReason, StatusView } from "./drivers/types.ts";
+import { addPrompt, delivererPid, listQueued, moveQueue, pendingPrompts, removeQueue, startDeliverer, type QueuedPrompt } from "./queue.ts";
 import { AgentNotFound, findRecord, listRecords, NAME_PATTERN, paneOptions, writeRecord, type AgentKind, type AgentRecord, type AgentState } from "./registry.ts";
 import { listSaved, markExited, readSaved, removeSaved, savedStatus, syncSession, updateSaved, writeSaved, type SavedAgent, type SavedStatus } from "./saved.ts";
 
@@ -31,6 +32,8 @@ export interface AgentView {
   stallId?: string;
   /** Its turn ended with this many background tasks of the request still running. */
   background?: number;
+  /** Prompts queued for it (am prompt --queue). */
+  queued?: number;
 }
 
 const SETTLED: AgentState[] = ["idle", "blocked", "stalled", "exited"];
@@ -70,13 +73,17 @@ export async function view(record: AgentRecord): Promise<AgentView> {
   const afterMs = await stallAfterMs();
   const status = noOutputStall(backgroundWait(await DRIVERS[record.kind].status(record), Date.now(), afterMs), Date.now(), afterMs);
   await syncSession(record);
+  const queue = (await listQueued(record.name)).filter((p) => p.startedAt === record.startedAt);
+  const queued = queue.filter((p) => !p.failed).length;
+  const failed = queue.length - queued;
+  const prompts = (n: number) => `${n} queued prompt${n === 1 ? "" : "s"}`;
   return {
     name: record.name,
     kind: record.kind,
     paneId: record.paneId,
     tmuxSession: record.tmuxSession,
     state: status.state,
-    detail: status.detail,
+    detail: [status.detail, queued ? prompts(queued) : "", failed ? `${prompts(failed)} not delivered (am queue ${record.name})` : ""].filter(Boolean).join("; "),
     cwd: record.cwd,
     startedAt: record.startedAt,
     session: record.session,
@@ -85,6 +92,7 @@ export async function view(record: AgentRecord): Promise<AgentView> {
     contract: record.contract,
     ...(status.stall ? { stall: status.stall, stallId: status.stallId } : {}),
     ...(status.background ? { background: status.background } : {}),
+    ...(queued ? { queued } : {}),
   };
 }
 
@@ -227,6 +235,22 @@ async function serverId(tmux: Tmux, paneId?: string): Promise<string | undefined
   return (await tmux.listPanes(format))[0];
 }
 
+/** Waits until a launched agent accepts input, and records that it is idle. */
+export async function markReady(tmux: Tmux, { kind, paneId, name }: Pick<AgentRecord, "kind" | "paneId" | "name">, deadline: number): Promise<void> {
+  const reload = () =>
+    findRecord(tmux, paneId).catch((error) => {
+      // Agents run as the pane's command, so a vanished pane means the agent exited.
+      if (error instanceof AgentNotFound) throw new AmError("exited", `${name} exited right after starting (pane ${paneId} is closed)`);
+      throw error;
+    });
+  await DRIVERS[kind].waitReady(tmux, reload, deadline);
+  // claude reports readiness from its own hook; the others are ready once waitReady returns,
+  // unless a hook already reported something (e.g. a prompt passed on the command line).
+  if (kind !== "claude") {
+    await tmux.run(["if-shell", "-F", "-t", paneId, "#{&&:#{==:#{@am_state},starting},#{==:#{@am_event},}}", `set-option -p -t ${paneId} @am_state idle`]);
+  }
+}
+
 export async function startAgent(tmux: Tmux, options: StartOptions): Promise<AgentView> {
   const { name, kind } = options;
   if (!NAME_PATTERN.test(name)) throw new AmError("bad_name", `name must match ${NAME_PATTERN}`);
@@ -307,12 +331,7 @@ export async function startAgent(tmux: Tmux, options: StartOptions): Promise<Age
       if (error instanceof AgentNotFound) throw new AmError("exited", `${name} exited right after starting (pane ${paneId} is closed)`);
       throw error;
     });
-  await driver.waitReady(tmux, reload, startedAt + (options.timeoutMs ?? 60_000));
-  // claude reports readiness from its own hook; the others are ready once waitReady returns,
-  // unless a hook already reported something (e.g. a prompt passed on the command line).
-  if (kind !== "claude") {
-    await tmux.run(["if-shell", "-F", "-t", paneId, "#{&&:#{==:#{@am_state},starting},#{==:#{@am_event},}}", `set-option -p -t ${paneId} @am_state idle`]);
-  }
+  await markReady(tmux, { kind, paneId, name }, startedAt + (options.timeoutMs ?? 60_000));
   if (driver.confirmLaunch) {
     try {
       const confirmed = await driver.confirmLaunch(await reload(), launchOptions);
@@ -340,7 +359,7 @@ export async function resumeAgent(tmux: Tmux, name: string, options: ResumeOptio
   if (!saved) throw new AmError("not_found", `am has no record of ${name} (see am list --saved)`);
   if ((await listRecords(tmux)).some((r) => r.name === name)) throw new AmError("running", `${name} is running; to restart it on its conversation, am stop ${name} first`);
   if (!saved.session) throw new AmError("no_session", `${name} never reported a conversation id (it had no prompt yet), so there is nothing to resume; start it again with am start`);
-  return startAgent(tmux, {
+  const agent = await startAgent(tmux, {
     name,
     kind: saved.kind,
     cwd: saved.cwd,
@@ -357,6 +376,9 @@ export async function resumeAgent(tmux: Tmux, name: string, options: ResumeOptio
     resume: saved.session,
     contractSent: saved.contractSent,
   });
+  // What was queued for the launch it continues.
+  if (await moveQueue(name, saved.startedAt, agent.startedAt)) startDeliverer(name);
+  return agent;
 }
 
 export interface SavedView extends SavedAgent {
@@ -386,7 +408,10 @@ export async function resumeLost(tmux: Tmux, options: ResumeOptions = {}): Promi
 
 export async function forgetAgent(name: string): Promise<void> {
   if (!(await removeSaved(name))) throw new AmError("not_found", `am has no record of ${name}`);
+  await removeQueue(name);
 }
+
+const DELIVERER_CHECK_MS = 15_000;
 
 export interface WaitOptions {
   /** Return as soon as its turn ends, even if background tasks it started still run. */
@@ -400,14 +425,26 @@ export interface WaitOptions {
  */
 export async function waitAgent(tmux: Tmux, target: string, until: AgentState[] = SETTLED, timeoutMs = 0, options: WaitOptions = {}): Promise<AgentView> {
   const deadline = timeoutMs ? Date.now() + timeoutMs : 0;
+  // What is queued as the wait begins is part of what it waits for; a prompt queued later is for a later wait.
+  let queued: Set<string> | undefined;
+  let delivererChecked = 0;
   const result = await poll(async () => {
     const record = await findRecord(tmux, target).catch((error) => {
       if (error?.name === "AgentNotFound") return undefined;
       throw error;
     });
     if (!record) return { state: "exited" } as AgentView;
+    const pending = await pendingPrompts(record);
+    queued ??= new Set(pending.map((p) => p.id));
+    const ahead = pending.some((p) => queued!.has(p.id));
+    // Its deliverer may have been killed: a wait for a queued prompt makes sure there is one.
+    if (ahead && Date.now() - delivererChecked > DELIVERER_CHECK_MS) {
+      delivererChecked = Date.now();
+      if (!(await delivererPid(record.name))) startDeliverer(record.name);
+    }
     const seen = await view(record);
     const current: AgentView = options.turn && seen.background ? { ...seen, state: "idle" } : seen;
+    if (ahead && current.state === "idle") return undefined;
     if (current.state === "stalled" && current.stallId && current.stallId === record.stallSeen) return undefined;
     if (until.includes(current.state) || current.state === "exited") {
       if (current.state === "stalled" && current.stallId) await writeRecord(tmux, record.paneId, { stallSeen: current.stallId });
@@ -512,6 +549,31 @@ export async function promptAgent(tmux: Tmux, target: string, text: string, opti
   if (!options.wait) return getAgent(tmux, found.paneId);
   const remaining = options.timeoutMs ? Math.max(1, options.timeoutMs - (Date.now() - started)) : 0;
   return waitAgent(tmux, found.paneId, SETTLED, remaining);
+}
+
+/** Refusals that only mean "not now". */
+const NOT_NOW = new Set(["agent_busy", "agent_blocked", "agent_not_ready"]);
+
+/**
+ * Sends `text` now if the agent is idle and nothing is queued for it; otherwise queues it, to be
+ * sent in order as the agent becomes idle. `after` is an am command run once the agent took it.
+ */
+export async function queuePrompt(tmux: Tmux, target: string, text: string, after?: string[]): Promise<{ agent: AgentView; queued?: QueuedPrompt; ahead: number }> {
+  const record = await findRecord(tmux, target);
+  const current = await view(record);
+  if (current.state === "exited") throw new AmError("agent_not_ready", `${record.name} has exited and cannot take a prompt`);
+  const ahead = await pendingPrompts(record);
+  if (current.state === "idle" && !ahead.length) {
+    try {
+      return { agent: await promptAgent(tmux, record.paneId, text), ahead: 0 };
+    } catch (error) {
+      // Someone else's prompt got there first: wait in line.
+      if (!(error instanceof AmError && NOT_NOW.has(error.code))) throw error;
+    }
+  }
+  const queued = await addPrompt(record, text, after);
+  startDeliverer(record.name);
+  return { agent: await getAgent(tmux, record.paneId), queued, ahead: ahead.length };
 }
 
 const LOCK_LOST = "__am_lock_lost__";

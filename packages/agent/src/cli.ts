@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { Tmux } from "@agent-master/tmux";
@@ -15,6 +14,7 @@ import {
   listAgents,
   openAgent,
   promptAgent,
+  queuePrompt,
   readReply,
   resolveStart,
   settledReply,
@@ -29,9 +29,11 @@ import {
   type SavedView,
 } from "./agent.ts";
 import { config, configPath } from "./config.ts";
+import { deliverQueue } from "./deliver.ts";
 import { BUILTIN, extensions, runAfterResumeAll } from "./extensions.ts";
 import { AmError } from "./drivers/index.ts";
 import { installGlobal, installProject, uninstallGlobal } from "./install.ts";
+import { amCommand, clearQueue, listQueued } from "./queue.ts";
 import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
 
 const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode / dsh) in tmux
@@ -53,8 +55,14 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
   am status <name>                      One agent's state
   am prompt <name> <text|-> [--wait] [--timeout MS]
                                         Send a task (- reads stdin); --wait returns once idle, blocked or stalled
+  am prompt <name> <text|-> --queue [--wait] [--after JSON]
+                                        Send it now if the agent is idle, else as soon as it is, in the order queued (after
+                                        a dialog it waits at on its first start, too). --after: an am command to run once
+                                        the agent took it, as a JSON array of its arguments
+  am queue <name> [--clear]             The prompts queued for it, and any that could not be delivered; --clear drops them
   am wait <name> [--until idle,blocked,stalled] [--timeout MS] [--read] [--turn]
                                         Wait for a state; a stall is reported once, the next wait waits for news
+                                        Prompts queued before the wait are waited for too
                                         --read: when it is idle, also print its final reply (what am read prints)
                                         An agent whose turn ended with background tasks still running (claude) goes on
                                         by itself, so it is not idle yet, for up to stallAfterMinutes; --turn: return
@@ -80,9 +88,6 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
   stalled: its turn will not finish without you: usage limit, content filter, an API error, or no output for
   stallAfterMinutes (default 15). Settings and profiles: ${configPath()}`;
 
-/** This am, for extensions to drive agents through. */
-const amBin = () => process.env.AM_BIN ?? fileURLToPath(new URL("../bin/am", import.meta.url));
-
 /** am's own usage, then each extension's (`<executable> help`). */
 function fullUsage(): string {
   const sections = [USAGE];
@@ -91,6 +96,17 @@ function fullUsage(): string {
     sections.push(help.status === 0 && help.stdout.trim() ? help.stdout.trimEnd() : `am ${command}: no usage available (${bin} help failed)`);
   }
   return sections.join("\n\n");
+}
+
+/** `--after`: an am command's arguments. */
+function amArguments(text: string): string[] {
+  try {
+    const args = JSON.parse(text);
+    if (Array.isArray(args) && args.length && args.every((arg) => typeof arg === "string")) return args;
+  } catch {
+    // Reported below.
+  }
+  throw new AmError("usage", '--after takes a JSON array of strings, e.g. ["ledger","update","3","--waiting","the worker"]');
 }
 
 function age(startedAt: number): string {
@@ -123,7 +139,7 @@ async function main(argv: string[]): Promise<number> {
   const extension = command && !BUILTIN.has(command) ? extensions().get(command) : undefined;
   if (extension) {
     // Extensions drive agents through am's command line: point them at this am.
-    const run = spawnSync(extension, rest, { stdio: "inherit", env: { ...process.env, AM_BIN: amBin() } });
+    const run = spawnSync(extension, rest, { stdio: "inherit", env: { ...process.env, AM_BIN: amCommand() } });
     if (run.error) throw run.error;
     return run.status ?? 1;
   }
@@ -148,6 +164,9 @@ async function main(argv: string[]): Promise<number> {
       always: { type: "boolean" },
       read: { type: "boolean" },
       turn: { type: "boolean" },
+      queue: { type: "boolean" },
+      after: { type: "string" },
+      clear: { type: "boolean" },
       project: { type: "string" },
       json: { type: "boolean" },
     },
@@ -208,7 +227,7 @@ async function main(argv: string[]): Promise<number> {
         const results = await resumeLost(tmux, { placement, timeoutMs, warn, note });
         const lines = results.map((r) => (r.agent ? `resumed ${r.name} (${r.agent.kind}, conversation ${r.agent.session})` : `could not resume ${r.name}: ${r.error}`));
         // Extensions bring back what they ran beside those agents (a watcher's feed loop, say).
-        const extra = runAfterResumeAll(amBin());
+        const extra = runAfterResumeAll(amCommand());
         if (values.json && extra.length) process.stderr.write(`${extra.join("\n")}\n`);
         out(results, [...(lines.length ? lines : ["no lost agents to resume"]), ...extra].join("\n"));
         return results.some((r) => r.error) ? 1 : 0;
@@ -244,10 +263,43 @@ async function main(argv: string[]): Promise<number> {
       const name = target();
       const text = positionals[1] === "-" ? readFileSync(0, "utf8") : positionals.slice(1).join(" ");
       if (!text.trim()) throw new AmError("usage", "nothing to send");
+      if (values.after !== undefined && !values.queue) throw new AmError("usage", "--after goes with --queue");
+      if (values.queue) {
+        const after = values.after === undefined ? undefined : amArguments(values.after);
+        const { agent, queued, ahead } = await queuePrompt(tmux, name, text, after);
+        if (!queued && after) spawnSync(amCommand(), after, { stdio: "ignore", timeout: 60_000 });
+        const said = queued ? `queued for ${agent.name} (${agent.state})${ahead ? `, ${ahead} ahead of it` : ""}: it is sent once ${agent.name} is idle` : `sent to ${agent.name}`;
+        if (!values.wait) {
+          out({ ...agent, queuedId: queued?.id ?? null }, said);
+          return 0;
+        }
+        const settled = await waitAgent(tmux, agent.paneId, undefined, timeoutMs);
+        out(settled, `${settled.name}: ${settled.state}${settled.detail ? ` (${settled.detail})` : ""}`);
+        return 0;
+      }
       const agent = await promptAgent(tmux, name, text, { wait: values.wait, timeoutMs });
       out(agent, values.wait ? `${agent.name}: ${agent.state}${agent.detail ? ` (${agent.detail})` : ""}` : `sent to ${agent.name}`);
       return 0;
     }
+    case "queue": {
+      const name = target();
+      if (values.clear) {
+        const dropped = await clearQueue(name);
+        out({ dropped }, `dropped ${dropped} queued prompt(s) of ${name}`);
+        return 0;
+      }
+      const startedAt = (await getAgent(tmux, name).catch(() => undefined))?.startedAt;
+      const queued = (await listQueued(name)).map((p) => ({ ...p, status: p.failed ? "failed" : p.startedAt === startedAt ? "waiting" : "earlier launch" }));
+      const first = (text: string) => {
+        const line = text.trim().split("\n")[0];
+        return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+      };
+      out(queued, queued.length ? columns([["STATUS", "AGE", "PROMPT", "WHY"], ...queued.map((p) => [p.status, age(p.at), first(p.text), p.failed ?? ""])]) : `nothing queued for ${name}`);
+      return 0;
+    }
+    case "deliver":
+      await deliverQueue(tmux, target());
+      return 0;
     case "wait": {
       const until = values.until ? (values.until.split(",") as AgentState[]) : undefined;
       const agent = await waitAgent(tmux, target(), until, timeoutMs, { turn: values.turn });
@@ -289,10 +341,12 @@ async function main(argv: string[]): Promise<number> {
       await sendKeys(tmux, target(), positionals.slice(1));
       out({ ok: true }, "sent");
       return 0;
-    case "stop":
+    case "stop": {
+      const left = (await getAgent(tmux, target())).queued;
       await stopAgent(tmux, target());
-      out({ ok: true }, `stopped ${target()}`);
+      out({ ok: true }, `stopped ${target()}${left ? `; ${left} queued prompt(s) were not delivered (am resume ${target()} delivers them)` : ""}`);
       return 0;
+    }
     case "install": {
       const report = values.project ? await installProject(resolve(values.project)) : await installGlobal();
       for (const line of report) process.stdout.write(`${line}\n`);

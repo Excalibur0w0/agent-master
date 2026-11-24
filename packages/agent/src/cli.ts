@@ -366,8 +366,15 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
+/** Exits once everything written has gone out: a pipe takes 64 KB at a time, and process.exit drops the rest. */
+function finish(code: number): void {
+  // The reader closed the pipe (| head): nothing more to say.
+  process.stdout.once("error", () => process.exit(code));
+  process.stdout.write("", () => process.exit(code));
+}
+
 main(process.argv.slice(2)).then(
-  (code) => process.exit(code),
+  finish,
   (error: unknown) => {
     const code = error instanceof AmError ? error.code : error instanceof Error && error.name === "AgentNotFound" ? "not_found" : "error";
     const message = error instanceof Error ? error.message : String(error);

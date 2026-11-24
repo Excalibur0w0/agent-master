@@ -50,8 +50,12 @@ async function worker(name: string, env: Record<string, string> = {}, timeoutMs 
   await writeFile(input, "");
   const started = startAgent(tmux, { name, kind: "claude", bin, cwd: dir, env: { AM_FAKE_INPUT: input, ...env }, timeoutMs });
   const typed = async () => (await readFile(input, "utf8")).split("\n").filter(Boolean);
-  const state = async (value: string) => tmux.setPaneOptions((await findRecord(tmux, name)).paneId, { "@am_state": value });
-  return { started, typed, state };
+  /** Ends the turn the latest prompt started. (The agent notes a line a moment before it says it is working.) */
+  const endTurn = async () => {
+    await until(`${name} working`, async () => (await findRecord(tmux, name)).state === "working");
+    await tmux.setPaneOptions((await findRecord(tmux, name)).paneId, { "@am_state": "idle" });
+  };
+  return { started, typed, endTurn };
 }
 
 async function until<T>(what: string, probe: () => Promise<T | undefined | false>, ms = 10_000): Promise<T> {
@@ -67,7 +71,7 @@ async function until<T>(what: string, probe: () => Promise<T | undefined | false
 const quick = { holdMs: 700, intervalMs: 50 };
 
 test("prompts queued for a busy agent go out in order as it becomes idle; waits begun before are not kept waiting", async () => {
-  const { started, typed, state } = await worker("q1");
+  const { started, typed, endTurn } = await worker("q1");
   await started;
   assert.equal((await queuePrompt(tmux, "q1", "first")).queued, undefined, "idle: sent at once");
   assert.deepEqual(await typed(), ["first"]);
@@ -86,12 +90,12 @@ test("prompts queued for a busy agent go out in order as it becomes idle; waits 
   await sleep(1000);
   assert.deepEqual(await typed(), ["first"], "still working");
 
-  await state("idle");
+  await endTurn();
   assert.equal((await earlier).state, "idle", "it returns on the turn it was waiting for");
   assert.deepEqual(await typed(), ["first"], "before the next prompt hides that turn's reply");
   await until("second", async () => (await typed()).length === 2);
   assert.deepEqual(ran, []);
-  await state("idle");
+  await endTurn();
   await until("third", async () => (await typed()).length === 3);
   await delivering;
   assert.deepEqual(await typed(), ["first", "second", "third"]);
@@ -99,7 +103,7 @@ test("prompts queued for a busy agent go out in order as it becomes idle; waits 
   assert.deepEqual(await listQueued("q1"), []);
 
   assert.equal(await Promise.race([later.then(() => "done"), sleep(800, "waiting")]), "waiting", "the last one is still being worked on");
-  await state("idle");
+  await endTurn();
   assert.equal((await later).state, "idle");
   await stopAgent(tmux, "q1");
 });
@@ -183,7 +187,7 @@ test("a queue belongs to one launch: am resume takes it along, a new agent of th
 });
 
 test("am prompt --queue hands the prompt to a deliverer of its own", async () => {
-  const { started, typed, state } = await worker("q6");
+  const { started, typed, endTurn } = await worker("q6");
   await started;
   const env = { ...process.env, TMUX: `${await tmux.socketPath()},0,0`, AM_BIN: am };
   const run = (...args: string[]) => promisify(execFile)(am, args, { env });
@@ -195,7 +199,7 @@ test("am prompt --queue hands the prompt to a deliverer of its own", async () =>
   assert.equal(queued.stdout, "queued for q6 (working): it is sent once q6 is idle\n");
   assert.match((await run("queue", "q6")).stdout, /^STATUS\s+AGE\s+PROMPT\s+WHY\nwaiting\s+\d+s\s+two 第二件\n$/);
   assert.match((await run("list")).stdout, /q6\s+claude\s+working\s+am-q6\s+\d+s\s+1 queued prompt/);
-  await state("idle");
+  await endTurn();
   await until("delivery", async () => (await typed()).includes("two 第二件"), 20_000);
   await until("an empty queue", async () => (await run("queue", "q6")).stdout === "nothing queued for q6\n");
   await stopAgent(tmux, "q6");

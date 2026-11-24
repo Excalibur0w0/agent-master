@@ -168,8 +168,25 @@ test("am ledger: the router writes title, who it waits on and the next step; am 
   assert.match((await run(["list"])).stdout, /#1\s+active\s+修登录\s+fix-login \(working\)\s+the worker/);
 
   assert.match((await run(["pause", "#2"])).stdout, /paused #2 旧方案/);
+  // Paused tasks are listed only when asked for; the plain list says how many it leaves out.
+  const ids = async (...flags: string[]) => JSON.parse((await run(["list", "--json", ...flags])).stdout).map((t: { id: number; status: string }) => `${t.id}:${t.status}`);
+  assert.deepEqual(await ids(), ["1:active", "3:active", "5:active", "4:queued"]);
+  assert.deepEqual(await ids("--paused"), ["2:paused"]);
+  const listed = (await run(["list"])).stdout;
+  assert.doesNotMatch(listed, /旧方案/);
+  assert.match(listed, /\n\(1 paused: am ledger list --paused\)\n$/);
+  const paused = (await run(["list", "--paused"])).stdout;
+  assert.match(paused, /^ID .*\n#2\s+paused\s+旧方案\s+old-one \(stopped\)\n$/);
+  assert.equal((await run(["list", "--paused", "--router", "other"])).stdout.trim(), "no paused tasks");
+  const both = await run(["list", "--paused", "--all"]);
+  assert.deepEqual([both.code, both.stderr.trim()], [2, "am ledger: pass --paused or --all, not both"]);
+  assert.match((await run(["show"])).stdout, /### #2 旧方案 \(paused\)/, "the whole ledger still shows them");
+
   const closed = await run(["close", "1", "--note", "user: done"]);
   assert.equal(closed.stdout, "closed #1 修登录\nits worker fix-login is still working: stop it with am stop fix-login\n", "no nudge to start what the user queued");
+  assert.deepEqual(await ids("--all"), ["3:active", "5:active", "2:paused", "4:queued", "1:closed"]);
+  for (const id of ["3", "4", "5"]) await run(["pause", id]);
+  assert.equal((await run(["list", "--router", "router"])).stdout, "no tasks\n(4 paused: am ledger list --paused --router router)\n");
   assert.equal((await run(["list", "--router", "other"])).stdout.trim(), "no tasks", "ledgers are per router");
   assert.equal((await run(["list"], { env: { AM_ROUTER: "other" } })).stdout.trim(), "no tasks", "$AM_ROUTER picks the ledger");
 });

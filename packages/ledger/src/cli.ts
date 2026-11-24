@@ -35,7 +35,8 @@ const USAGE = `am ledger — the router's ledger of work in flight, and the mess
 
   am ledger show                         The ledger as markdown: tasks in progress and queued, each worker's live
                                          state, and the messages waiting for the user's review
-  am ledger list [--all]                 Tasks, one line each (--all: closed ones too)
+  am ledger list [--paused | --all]      Tasks in progress and queued, one line each (--paused: the paused ones
+                                         instead; --all: every task, paused and closed ones too)
   am ledger add <title> [--worker NAME] [--waiting TEXT] [--next TEXT] [--note TEXT] [--queue]
                                          A task in progress (--queue: waiting in the queue, if the user wants it
                                          there). The worker's kind, profile, conversation id and state come from am
@@ -103,6 +104,7 @@ async function main(argv: string[]): Promise<number> {
       note: { type: "string" },
       queue: { type: "boolean" },
       all: { type: "boolean" },
+      paused: { type: "boolean" },
       json: { type: "boolean" },
       priority: { type: "string" },
       who: { type: "string" },
@@ -248,7 +250,11 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "list": {
-      const tasks = listTasks(db, router, values.all);
+      if (values.paused && values.all) throw new LedgerError("usage", "pass --paused or --all, not both");
+      const found = listTasks(db, router, values.all);
+      // A paused task is set aside: it is listed only when asked for.
+      const tasks = values.all ? found : found.filter((t) => (t.status === "paused") === Boolean(values.paused));
+      const hidden = values.all || values.paused ? 0 : found.length - tasks.length;
       const info = infoFor(tasks);
       // Columns line up in a terminal: CJK characters take two cells.
       const cells = (s: string) => [...s].reduce((n, c) => n + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(c) ? 2 : 1), 0);
@@ -263,8 +269,9 @@ async function main(argv: string[]): Promise<number> {
       };
       const rows = [["ID", "STATUS", "TITLE", "WORKER", "WAITING ON"], ...tasks.map((t) => [`#${t.id}`, t.status, cut(t.title, 32), t.worker ? `${t.worker} (${info(t)?.state ?? "unknown"})` : "-", cut(t.waiting, 60)])];
       const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => cells(r[i]))));
-      const text = tasks.length ? rows.map((r) => r.map((c, i) => c + " ".repeat(widths[i] - cells(c))).join("  ").trimEnd()).join("\n") : "no tasks";
-      out(tasks.map((t) => ({ ...t, worker_state: info(t)?.state ?? null })), text);
+      const text = tasks.length ? rows.map((r) => r.map((c, i) => c + " ".repeat(widths[i] - cells(c))).join("  ").trimEnd()).join("\n") : values.paused ? "no paused tasks" : "no tasks";
+      const hint = hidden ? `\n(${hidden} paused: am ledger list --paused${values.router ? ` --router ${router}` : ""})` : "";
+      out(tasks.map((t) => ({ ...t, worker_state: info(t)?.state ?? null })), text + hint);
       return 0;
     }
     case "add": {

@@ -344,7 +344,8 @@ router 的在办事项和 watcher 的待过目消息都在一个 SQLite 文件�
 
 ```sh
 am ledger show                    # markdown 视图：在办、排队、待过目，worker 的实时状态由 am 带出
-am ledger list                    # 一行一件
+am ledger list                    # 在办和排队的，一行一件
+am ledger list --paused           # 只看暂停的（--all：全部，含暂停和已关闭的）
 am ledger add "修登录" --worker fix-login --waiting "the worker" --next "汇报后转告用户"
 am ledger update 3 --waiting "the user: 选方案" --note "worker 给了两个方案"
 am ledger pause 3 / am ledger start 3 / am ledger close 3

@@ -34,7 +34,7 @@ Your context gets compacted, and your session may be replaced by a fresh one at 
   | The user sets a task aside | `am ledger pause <id>`, then `am stop` its worker |
   | A queued or paused task starts | `am ledger start <id>` (then `am resume <name>` if it had a worker) |
   | The user says it is finished | `am ledger close <id>`, then `am stop` its worker |
-  | See it all | `am ledger show` (markdown), `am ledger list` (one line per task) |
+  | See it all | `am ledger show` (markdown), `am ledger list` (one line per task in progress or queued; `--paused` for the paused ones) |
 
 - **No cap on tasks in progress.** A new request goes in progress right away, however many are in flight. Queue, pause or start a task only when the user says so; never ask them to make room.
 - **Only the user closes a task.** A delivered result is not the end: the task stays in progress, waiting on the user, with its worker, until the user says it is finished. Never close a task or stop its worker on your own judgment.

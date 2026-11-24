@@ -2,7 +2,7 @@
 // $XDG_CONFIG_HOME/agent-master/am.json, by default ~/.config/agent-master/am.json.
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { AmError } from "./drivers/types.ts";
 import { AGENT_KINDS, type AgentKind } from "./registry.ts";
@@ -25,9 +25,12 @@ export interface AmConfig {
   profiles: Record<string, Profile>;
   /** A turn with no output for this long is reported as `stalled` (no_output). */
   stallAfterMinutes: number;
+  /** `am trust` answers trust dialogs for directories below these only. */
+  trustRoots: string[];
 }
 
 export const DEFAULT_STALL_AFTER_MINUTES = 15;
+export const DEFAULT_TRUST_ROOTS = ["~/workspace"];
 
 export function configPath(): string {
   return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "agent-master", "am.json");
@@ -60,7 +63,7 @@ export async function loadConfig(path = configPath()): Promise<AmConfig> {
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { profiles: {}, stallAfterMinutes: DEFAULT_STALL_AFTER_MINUTES };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { profiles: {}, stallAfterMinutes: DEFAULT_STALL_AFTER_MINUTES, trustRoots: DEFAULT_TRUST_ROOTS };
     throw error;
   }
   let doc: any;
@@ -73,7 +76,12 @@ export async function loadConfig(path = configPath()): Promise<AmConfig> {
   for (const [name, raw] of Object.entries(doc?.profiles ?? {})) profiles[name] = checkProfile(name, raw, path);
   const stall = doc?.stallAfterMinutes ?? DEFAULT_STALL_AFTER_MINUTES;
   if (typeof stall !== "number" || !(stall > 0)) throw new AmError("bad_config", `${path}: stallAfterMinutes must be a positive number`);
-  return { profiles, stallAfterMinutes: stall };
+  const trustRoots = doc?.trustRoots ?? DEFAULT_TRUST_ROOTS;
+  // A relative one would mean another directory wherever am runs.
+  if (!Array.isArray(trustRoots) || !trustRoots.every((dir) => typeof dir === "string" && isAbsolute(expandHome(dir)))) {
+    throw new AmError("bad_config", `${path}: trustRoots must be an array of absolute paths (~/ allowed)`);
+  }
+  return { profiles, stallAfterMinutes: stall, trustRoots };
 }
 
 let cached: Promise<AmConfig> | undefined;

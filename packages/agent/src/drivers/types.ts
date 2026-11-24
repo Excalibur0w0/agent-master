@@ -52,10 +52,24 @@ export interface LaunchOptions {
   resume?: string;
 }
 
+/** The folder-trust dialog an agent stands at on its first start in a directory. */
+export interface TrustDialog {
+  /** The directory its answer is recorded for. */
+  root: string;
+  /** That is a git repository, trusted as a whole (its linked worktrees too). */
+  repository: boolean;
+  /** What to press, from the answer it opens on to the one that trusts, and Enter. */
+  keys: string[];
+  /** Whether the agent has recorded that it trusts the directory. */
+  answered(): Promise<boolean>;
+}
+
 export interface Driver {
   readonly kind: AgentKind;
   /** Problems worth telling the user about before launching (never fatal). */
   preflight(cwd: string, args: string[]): Promise<string[]>;
+  /** The trust dialog a start in `cwd` stands at; fails unless the agent's records say that is the dialog it would be. */
+  trustDialog?(cwd: string): Promise<TrustDialog>;
   /** Whether `--bin` can replace the CLI this driver launches. */
   readonly binCompatible?: boolean;
   launch(options: LaunchOptions): Promise<LaunchPlan>;

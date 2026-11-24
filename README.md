@@ -67,6 +67,7 @@ am stop reviewer
 | `am approve <name> [--always]` / `am deny <name>` | 处理权限请求（`--always` 仅 opencode） |
 | `am interrupt <name>` / `am keys <name> <key>...` / `am stop <name>` | 中断 / 原始按键 / 关闭（am 仍记得它，可以 resume） |
 | `am resume <name>` / `am resume --all` | 用当初的启动参数重新起来，并接回它原来的会话；`--all` 恢复所有随 tmux 或机器重启丢掉的 agent，再拉起 watcher 的 feed loop |
+| `am trust <name> [--timeout]` | 替你答掉它首次启动时的「信任这个目录吗」，只在你说过可以信任时用；见下文「首次使用会遇到的确认」 |
 | `am forget <name>` | 删掉 am 对它的记录 |
 | `am router start\|restart\|stop\|dispatch` | 常驻的派活会话，见下文「am router」 |
 | `am watcher start\|stop\|status\|list\|resume` | 常驻、只读地盯消息，见下文「am watcher」 |
@@ -85,6 +86,7 @@ am stop reviewer
 ```json
 {
   "stallAfterMinutes": 15,
+  "trustRoots": ["~/workspace"],
   "profiles": {
     "codex": {
       "description": "Codex，1M 上下文，关 fast",
@@ -233,11 +235,19 @@ hook（dsh 是插件）把状态写在 agent 所在 pane 的 `@am_*` 选项上�
 
 ### 首次使用会遇到的确认（hook 看不到，需要人到它的会话里点一次）
 
-- Claude：目录信任（父目录信任过就不会问）
-- Codex：目录信任（按 git 根目录记录），以及 am 的 hooks 信任（`Trust all and continue`，记录在 `~/.codex/config.toml` 的 `[hooks.state]`）
+- Claude：目录信任（git 仓库按仓库根目录记录，附属 worktree 认主工作区的根目录；不在 git 里的，父目录信任过就不会问）
+- Codex：目录信任（按 git 根目录记录，附属 worktree 认主工作区的根目录），以及 am 的 hooks 信任（`Trust all and continue`，记录在 `~/.codex/config.toml` 的 `[hooks.state]`）
 - dsh：没有确认框；`dshcli` 不在 PATH 上时 `am start` 会提前提示
 
 `am start` 会提前提示；没确认时会超时报错。
+
+**`am trust <name>`** 替你答掉其中的目录信任框（Claude、Codex）。am 自己从不调用它，要有人明确运行；你说过可以信任时才用。
+
+- 信任后，这个仓库（连同它的所有 worktree）里的设置和 hooks 会自动生效、MCP 配置会被读取，所以只放行 am.json 里 `trustRoots` 下面的目录，默认是 `["~/workspace"]`，`[]` 表示一律不放行。worker 的目录和要信任的仓库根都得在里面（软链接按真实路径算，`trustRoots` 自己不算）。
+- 不读屏。只有 worker 还在 `starting`，且 agent 自己的记录（`~/.claude.json`、`~/.codex/config.toml`）说明此刻停着的就是目录信任框，才按键；已经信任过、没登录、初始设置没做完、启动时换过配置目录（`CLAUDE_CONFIG_DIR`、`CODEX_HOME` 等）或工作目录（`--worktree`、`-C`），一律拒绝，让你去 `am open`。
+- 按键只按一次：Claude 是 `Down`、`Enter`（默认停在「No, exit」，2.1.327），Codex 是 `Enter`（默认停在「Trust and continue」，0.169）。之后等信任写进它的记录；没写进去就报错，**不按第二次**，因为后面可能弹出的框（bypass permissions、MCP、hooks）会把同样的按键当成回答，那些框仍由你来答。
+- 依赖这两个版本的弹窗：选项顺序变了，worker 会退出，什么都没被信任；新版本要是在信任框之前加了别的框，am 判断不出来，升级后先用 `am open` 看一眼。
+- 确认后等它就绪（`--timeout`，默认 30 秒）；排队的 prompt 照常自动送达。
 
 ### 已知限制
 

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const GUIDE = fileURLToPath(new URL("../ROUTER.md", import.meta.url));
 
-/** The am commands a router with permission prompts on runs without asking; approve, deny, keys and open still ask the user. */
+/** The am commands a router with permission prompts on runs without asking; approve, deny, keys, trust and open still ask the user. */
 const ALLOWED = ["list", "status", "start", "prompt", "queue", "wait", "read", "interrupt", "stop", "profiles", "resume", "ledger", "router dispatch"];
 
 /** The markdown ledger routers kept before `am ledger`; `am router start` moves what it holds into the ledger once. */

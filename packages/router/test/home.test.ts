@@ -20,7 +20,7 @@ test("the router's home holds the same instructions for every agent kind, and it
   const { allow } = JSON.parse(files[".claude/settings.json"]).permissions;
   assert.ok(allow.includes("Bash(am prompt:*)") && allow.includes("Bash(am wait:*)"));
   // Decisions that belong to the user still ask them.
-  for (const command of ["approve", "deny", "keys", "open"]) assert.ok(!allow.includes(`Bash(am ${command}:*)`), command);
+  for (const command of ["approve", "deny", "keys", "trust", "open"]) assert.ok(!allow.includes(`Bash(am ${command}:*)`), command);
   // Its ledger is am ledger, not a file it edits.
   assert.ok(allow.includes("Bash(am ledger:*)"));
   assert.ok(allow.includes("Bash(am router dispatch:*)") && !allow.includes("Bash(am router:*)"), "the router dispatches, but does not restart itself");

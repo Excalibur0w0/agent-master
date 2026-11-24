@@ -82,6 +82,24 @@ export const claude: Driver = {
     return [];
   },
 
+  async trustDialog(cwd) {
+    const known = await readGlobalConfig();
+    if (!known) throw new AmError("no_trust_dialog", "Claude's record of trusted folders (.claude.json) cannot be read, so am cannot tell which dialog it is at");
+    // Asked before everything else, except the first-run setup.
+    if (!known.hasCompletedOnboarding) throw new AmError("no_trust_dialog", "Claude has not been set up yet: its setup screens come before the trust dialog");
+    const git = await gitRoots(cwd);
+    const real = await realpath(cwd).catch(() => resolve(cwd));
+    // Older versions let any trusted parent count, inside git too.
+    for (let dir = real; ; dir = dirname(dir)) {
+      if (known.projects?.[dir]?.hasTrustDialogAccepted) throw new AmError("no_trust_dialog", `Claude already trusts ${dir}: it is at another dialog, or still starting`);
+      if (dir === dirname(dir)) break;
+    }
+    const answered = async () => (await isTrusted(cwd)) === true;
+    if (await answered()) throw new AmError("no_trust_dialog", `Claude already trusts ${git?.main ?? real}: it is at another dialog, or still starting`);
+    // It opens on "No, exit"; "Yes, I trust this folder" is below (Claude Code 2.1.327).
+    return { root: git?.main ?? real, repository: !!git, keys: ["Down", "Enter"], answered };
+  },
+
   async launch({ model, args, bin, resume }) {
     const native = resume ? withoutSessionChoice(args) : args;
     return {

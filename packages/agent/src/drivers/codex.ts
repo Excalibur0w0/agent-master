@@ -37,9 +37,11 @@ export async function codexGitRoot(cwd: string): Promise<string | undefined> {
   return (await gitRoots(cwd))?.main;
 }
 
-function readConfig(): Promise<string> {
-  return readFile(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml"), "utf8").catch(() => "");
+function readCodexFile(name: string): Promise<string> {
+  return readFile(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), name), "utf8").catch(() => "");
 }
+
+const readConfig = () => readCodexFile("config.toml");
 
 type TrustLevel = "trusted" | "untrusted";
 
@@ -148,6 +150,18 @@ export const codex: Driver = {
     if (!codexDirectoryTrusted(config, cwd, await codexGitRoot(cwd), trustOverrides(args))) warnings.push(`Codex has not trusted ${cwd} yet: it will ask whether to trust this directory on start; confirm it in its tmux session (am open)`);
     if (!(await codexHooksTrusted(config))) warnings.push("Codex asks once to trust am's hooks the first time it loads them: choose \"Trust all and continue\" in its tmux session (am open)");
     return warnings;
+  },
+
+  async trustDialog(cwd) {
+    const root = await codexGitRoot(cwd);
+    if (!root) throw new AmError("no_trust_dialog", "Codex asks whether to trust a folder only inside a git repository");
+    // The login screen comes first, and Enter would start a login. (The directory's dialog comes before the one for hooks.)
+    if (!(await readCodexFile("auth.json")).trim()) throw new AmError("no_trust_dialog", "Codex has no login on record (auth.json): it may be at its login screen");
+    const level = async () => parseCodexConfig(await readConfig()).projects[root];
+    const now = await level();
+    if (now) throw new AmError("no_trust_dialog", `Codex already has ${root} down as ${now}: it is at another dialog, or still starting`);
+    // It opens on "Trust and continue" (Codex 0.169).
+    return { root, repository: true, keys: ["Enter"], answered: async () => (await level()) === "trusted" };
   },
 
   async launch({ model, args, bin, resume }) {

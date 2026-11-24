@@ -8,4 +8,4 @@ import type { Driver } from "./types.ts";
 export const DRIVERS: Record<AgentKind, Driver> = { claude, codex, opencode, dsh };
 
 export { AmError, poll, sleep } from "./types.ts";
-export type { Driver, LaunchPlan, StatusView } from "./types.ts";
+export type { Driver, LaunchPlan, StatusView, TrustDialog } from "./types.ts";

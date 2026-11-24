@@ -35,6 +35,7 @@ import { AmError } from "./drivers/index.ts";
 import { installGlobal, installProject, uninstallGlobal } from "./install.ts";
 import { amCommand, clearQueue, listQueued } from "./queue.ts";
 import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
+import { trustFolder } from "./trust.ts";
 import { asksHelp, usageOf } from "./usage.ts";
 
 const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode / dsh) in tmux
@@ -73,6 +74,11 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
   am deny <name>                        Deny it
   am interrupt <name>                   Interrupt the current turn
   am keys <name> <key>...               Send raw keys (tmux key names such as Enter Escape C-c)
+  am trust <name> [--timeout MS]        Answer the folder-trust dialog a claude or codex stands at on its first start in a
+                                        directory, only when the user has said to trust it. Inside git this trusts the
+                                        whole repository. Presses keys once; refuses when it is not sure that this is
+                                        the dialog, or the directory is not below trustRoots in your am.json (default:
+                                        ~/workspace). Other dialogs are the user's, in am open <name>
   am stop <name>                        Close it together with its session (am still remembers it)
   am resume <name> [--window] [--timeout MS] | am resume --all
                                         Start a remembered agent again on its last conversation, with the options it
@@ -358,6 +364,17 @@ async function main(argv: string[]): Promise<number> {
       await sendKeys(tmux, target(), positionals.slice(1));
       out({ ok: true }, "sent");
       return 0;
+    case "trust": {
+      const { agent, root, repository } = await trustFolder(tmux, target(), { timeoutMs });
+      const trusts = `${agent.kind} now trusts ${root}${repository ? " (the whole repository, its worktrees too)" : ""}`;
+      out(
+        { ...agent, trusted: root },
+        agent.state === "starting"
+          ? `${trusts}, but ${agent.name} is still starting: it may be at another dialog (hooks, MCP servers, permissions), which the user must answer in am open ${agent.name}`
+          : `${trusts}; ${agent.name} is ${agent.state === "idle" ? "ready" : agent.state}`,
+      );
+      return 0;
+    }
     case "stop": {
       const left = (await getAgent(tmux, target())).queued;
       await stopAgent(tmux, target());

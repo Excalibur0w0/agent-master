@@ -148,6 +148,30 @@ esac
   return { dir, run, calls };
 }
 
+test("am ledger: -h after a command explains that command, and does nothing else", async () => {
+  const { run } = await setup();
+  const help = async (...args: string[]) => {
+    const { code, stdout, stderr } = await run(args);
+    assert.deepEqual([code, stderr], [0, ""], args.join(" "));
+    return stdout;
+  };
+  const list = await help("list", "-h");
+  assert.match(list, /^  am ledger list \[--paused \| --all\] /);
+  assert.match(list, /--paused: the paused ones/);
+  assert.doesNotMatch(list, /am ledger (add|show|inbox)/);
+  assert.equal(await help("list", "--paused", "--help"), list);
+  assert.equal((await help("show", "-h")).match(/am ledger show/g)?.length, 2, "both forms");
+  assert.match(await help("inbox", "take", "-h"), /^  am ledger inbox take <n> /);
+  const inbox = await help("inbox", "-h");
+  assert.match(inbox, /^  am ledger inbox list [^]*\n  am ledger inbox take /);
+  assert.doesNotMatch(inbox, /Every command takes/);
+  const all = await help("-h");
+  assert.match(all, /^am ledger — [^]*Database: /);
+  assert.equal(await help("nope", "-h"), all);
+  assert.match(await help("add", "标题", "-h"), /^  am ledger add <title> /);
+  assert.equal((await run(["list"])).stdout, "no tasks\n", "add -h added nothing");
+});
+
 test("am ledger: the router writes title, who it waits on and the next step; am fills in the worker", async () => {
   const { run } = await setup();
   const added = await run(["add", "修登录", "--worker", "fix-login", "--waiting", "the worker", "--next", "汇报后转告用户", "--json"]);
@@ -168,13 +192,13 @@ test("am ledger: the router writes title, who it waits on and the next step; am 
   assert.match((await run(["list"])).stdout, /#1\s+active\s+now\s+修登录\s+fix-login \(working\)\s+the worker/);
 
   assert.match((await run(["pause", "#2"])).stdout, /paused #2 旧方案/);
-  // Paused tasks are listed only when asked for; the plain list says how many it leaves out.
+  // Paused tasks are listed only when asked for, and the plain list says nothing about them: -h does.
   const ids = async (...flags: string[]) => JSON.parse((await run(["list", "--json", ...flags])).stdout).map((t: { id: number; status: string }) => `${t.id}:${t.status}`);
   assert.deepEqual(await ids(), ["1:active", "3:active", "5:active", "4:queued"]);
   assert.deepEqual(await ids("--paused"), ["2:paused"]);
   const listed = (await run(["list"])).stdout;
-  assert.doesNotMatch(listed, /旧方案/);
-  assert.match(listed, /\n\(1 paused: am ledger list --paused\)\n$/);
+  assert.doesNotMatch(listed, /旧方案|paused/);
+  assert.match(listed, /^ID .*\n(#\d+ .*\n){4}$/, "the header and the tasks, nothing else");
   const paused = (await run(["list", "--paused"])).stdout;
   assert.match(paused, /^ID .*\n#2\s+paused\s+now\s+旧方案\s+old-one \(stopped\)\n$/);
   assert.equal((await run(["list", "--paused", "--router", "other"])).stdout.trim(), "no paused tasks");
@@ -186,7 +210,7 @@ test("am ledger: the router writes title, who it waits on and the next step; am 
   assert.equal(closed.stdout, "closed #1 修登录\nits worker fix-login is still working: stop it with am stop fix-login\n", "no nudge to start what the user queued");
   assert.deepEqual(await ids("--all"), ["3:active", "5:active", "2:paused", "4:queued", "1:closed"]);
   for (const id of ["3", "4", "5"]) await run(["pause", id]);
-  assert.equal((await run(["list", "--router", "router"])).stdout, "no tasks\n(4 paused: am ledger list --paused --router router)\n");
+  assert.equal((await run(["list", "--router", "router"])).stdout, "no tasks\n");
   assert.equal((await run(["list", "--router", "other"])).stdout.trim(), "no tasks", "ledgers are per router");
   assert.equal((await run(["list"], { env: { AM_ROUTER: "other" } })).stdout.trim(), "no tasks", "$AM_ROUTER picks the ledger");
 });

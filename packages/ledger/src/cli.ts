@@ -73,6 +73,18 @@ const USAGE = `am ledger — the router's ledger of work in flight, and the mess
   How many tasks are in progress at once is up to the user: nothing caps it; queue and pause only when they say.
   Database: ${ledgerPath()} (AM_LEDGER_DB)`;
 
+/** What USAGE says about one command ("list", "inbox add", or "inbox" for all of those); the whole of it for no command, or one it does not have. */
+function usageOf(command: string): string {
+  let within = false;
+  const own = USAGE.split("\n").filter((line) => {
+    // A command's own line starts at two spaces; the lines under it are indented further.
+    if (line.startsWith("  am ledger ")) within = `${line} `.startsWith(`  am ledger ${command} `);
+    else if (!line.startsWith("   ")) within = false;
+    return within;
+  });
+  return command && own.length ? own.join("\n") : USAGE;
+}
+
 const id = (text: string | undefined, prefix: string, what: string): number => {
   const match = text ? new RegExp(`^${prefix}?(\\d+)$`).exec(text) : null;
   if (!match) throw new LedgerError("usage", `${what} needs an id, e.g. ${prefix}3`);
@@ -117,14 +129,17 @@ async function main(argv: string[]): Promise<number> {
       file: { type: "string" },
       auto: { type: "boolean" },
       timeout: { type: "string" },
+      help: { type: "boolean", short: "h" },
     },
   });
   const router = values.router ?? (process.env.AM_ROUTER || "router");
   const out = (data: unknown, text: string) => process.stdout.write(`${values.json ? JSON.stringify(data) : text}\n`);
   const note = (text: string) => process.stderr.write(`am ledger: ${text}\n`);
 
-  if (!inbox && (command === undefined || command === "help" || command === "-h" || command === "--help")) {
-    process.stdout.write(`${USAGE}\n`);
+  const asked = command === "help" || command === "-h" || command === "--help";
+  if (values.help || asked || (!inbox && command === undefined)) {
+    const named = [...(inbox ? ["inbox"] : []), ...(asked || command === undefined ? [] : [command])];
+    process.stdout.write(`${usageOf(named.join(" "))}\n`);
     return 0;
   }
   const db = openLedger();
@@ -264,7 +279,6 @@ async function main(argv: string[]): Promise<number> {
       const found = listTasks(db, router, values.all);
       // A paused task is set aside: it is listed only when asked for.
       const tasks = values.all ? found : found.filter((t) => (t.status === "paused") === Boolean(values.paused));
-      const hidden = values.all || values.paused ? 0 : found.length - tasks.length;
       const info = infoFor(tasks);
       // Columns line up in a terminal: CJK characters take two cells.
       const cells = (s: string) => [...s].reduce((n, c) => n + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(c) ? 2 : 1), 0);
@@ -280,8 +294,7 @@ async function main(argv: string[]): Promise<number> {
       const rows = [["ID", "STATUS", "UPDATED", "TITLE", "WORKER", "WAITING ON"], ...tasks.map((t) => [`#${t.id}`, t.status, age(t.updated_at), cut(t.title, 32), t.worker ? `${t.worker} (${info(t)?.state ?? "unknown"})` : "-", cut(t.waiting, 60)])];
       const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => cells(r[i]))));
       const text = tasks.length ? rows.map((r) => r.map((c, i) => c + " ".repeat(widths[i] - cells(c))).join("  ").trimEnd()).join("\n") : values.paused ? "no paused tasks" : "no tasks";
-      const hint = hidden ? `\n(${hidden} paused: am ledger list --paused${values.router ? ` --router ${router}` : ""})` : "";
-      out(tasks.map((t) => ({ ...t, worker_state: info(t)?.state ?? null })), text + hint);
+      out(tasks.map((t) => ({ ...t, worker_state: info(t)?.state ?? null })), text);
       return 0;
     }
     case "add": {

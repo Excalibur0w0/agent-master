@@ -33,7 +33,8 @@ am stop reviewer                               # when you no longer need it
 | `am start <name> --kind K [--cwd DIR] [--model M] [--bin EXE] [-- native args]` | Launch the agent in tmux session `am-<name>`. Default cwd is yours. `--bin` runs a wrapper that accepts the same arguments as `claude`/`codex` (e.g. a codex launched through a gateway); it must be a command on PATH or a path relative to `--cwd`, not a shell alias. |
 | `am start <name> --profile P [--cwd DIR]` | Launch with one of the user's profiles (`am profiles` lists them); prefer it to hand-written flags. |
 | `am prompt <name> <text\|-> [--wait] [--timeout MS]` | Submit a task (`-` reads stdin). `--wait` returns once it is `idle`, `blocked` or `stalled`. |
-| `am wait <name> [--until idle,blocked,stalled] [--timeout MS] [--read]` | Wait for a state; `--read` also prints the final reply once it is idle. |
+| `am prompt <name> <text\|-> --queue` | Send it now if the agent is idle, else as soon as it is, in order; also to one held at a dialog on its first start. `am queue <name>` lists what waits. |
+| `am wait <name> [--until idle,blocked,stalled] [--timeout MS] [--read] [--turn]` | Wait for a state; `--read` also prints the final reply once it is idle. A Claude whose turn ended with background tasks still running is not idle yet (it goes on by itself); `--turn` returns as the turn ends all the same, e.g. when you asked it to start a dev server. |
 | `am status <name>` / `am list` | Current state; `detail` explains `blocked` (e.g. the command awaiting approval) and `stalled`. |
 | `am read <name>` | Final message of its latest turn. |
 | `am interrupt <name>` | Stop its current turn. |

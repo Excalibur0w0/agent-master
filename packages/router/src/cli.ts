@@ -32,7 +32,9 @@ const USAGE = `am router — a long-running agent session that hands your reques
                      For the router: a new request to a new worker in one step. Starts the worker (am start), hands it
                      the task (am prompt; - reads stdin) and adds the task to the router's ledger (am ledger add, waiting
                      on "the worker" unless --waiting says otherwise; --router as for am ledger). If the worker starts
-                     but does not confirm the task, the task is still added, waiting on the user
+                     but does not confirm the task, the task is still added, waiting on the user. If it is held at a
+                     dialog on its first start (trusting the folder, logging in), the task is added waiting on the user
+                     to answer it, and is sent, and set waiting on the worker, once they have
 
   Everything else goes through am: am list, am open <name>, ...`;
 
@@ -237,6 +239,58 @@ async function stop(args: string[]): Promise<number> {
   return am(["stop", name]).status ?? 1;
 }
 
+/** Passes on what `am start --json` said on stderr; returns the code of the error it ended with, if any. */
+function reportStart(started: SpawnSyncReturns<string>): string | undefined {
+  let code: string | undefined;
+  for (const line of (started.stderr ?? "").split("\n").filter(Boolean)) {
+    let error: { error?: unknown; message?: unknown } | undefined;
+    try {
+      error = JSON.parse(line);
+    } catch {
+      // am's own words, such as a warning.
+    }
+    if (typeof error?.error === "string") code = error.error;
+    process.stderr.write(typeof error?.message === "string" ? `am: ${error.message}\n` : `${line}\n`);
+  }
+  return started.status === 0 ? undefined : (code ?? "error");
+}
+
+/**
+ * The worker is up but held at a dialog only the user can answer. The task goes on record and into
+ * the worker's queue, so it is neither lost nor typed into the dialog; am sends it once the dialog
+ * is answered, and then sets the task waiting on the worker.
+ */
+function queueDispatched(worker: string, text: string, then: string, add: (waiting: string, capture?: boolean) => SpawnSyncReturns<string>): number {
+  const held = `the user: ${worker} is held at a dialog on its first start (trusting the folder, or logging in): answer it in am open ${worker}; the task is then sent by itself`;
+  const added = add(held, true);
+  let id: number | undefined;
+  try {
+    id = (JSON.parse(added.stdout) as { id: number }).id;
+  } catch {
+    process.stderr.write(added.stderr ?? "");
+  }
+  const after = id === undefined ? [] : ["--after", JSON.stringify(["ledger", "update", String(id), "--waiting", then])];
+  const queued = am(["prompt", worker, "-", "--queue", ...after, "--json"], true, text);
+  if (queued.status !== 0) {
+    process.stderr.write(queued.stderr ?? "");
+    if (id !== undefined) am(["ledger", "update", String(id), "--waiting", `the user: ${worker} is held at a dialog, and the task could not be queued for it; send it with am prompt ${worker} once the dialog is answered`], true);
+    return 1;
+  }
+  let sentNow = false;
+  try {
+    sentNow = JSON.parse(queued.stdout).queuedId === null;
+  } catch {
+    // Queued, then.
+  }
+  if (sentNow) {
+    process.stdout.write(`${worker} was slow to start; it has the task${id === undefined ? ", but the ledger has no record of it; add it with am ledger add" : ` (task #${id})`}\n`);
+    return id === undefined ? 1 : 0;
+  }
+  process.stdout.write(`${worker} is held at a dialog on its first start (trusting the folder, or logging in): the user must answer it in am open ${worker}.\n`);
+  process.stdout.write(id === undefined ? `The task is queued and sent once they have, but the ledger has no record of it; add it with am ledger add\n` : `The task is queued (task #${id}) and sent once they have.\n`);
+  return id === undefined ? 1 : 0;
+}
+
 /**
  * Run by the router, for a new request: am start, am prompt and am ledger add in
  * one command, so handing work out takes the router one step instead of three.
@@ -277,21 +331,31 @@ async function dispatch(args: string[]): Promise<number> {
       ...(values.kind ? ["--kind", values.kind] : []),
       ...(values.cwd ? ["--cwd", resolve(values.cwd)] : []),
       ...(values.model ? ["--model", values.model] : []),
+      "--json",
       ...(native.length ? ["--", ...native] : []),
     ],
-    false,
+    true,
     undefined,
     process.env,
   );
-  if (started.status !== 0) return started.status ?? 1;
+  const failure = reportStart(started);
+  const add = (waiting: string, capture = false) =>
+    am([
+      "ledger", "add", title, "--worker", worker, "--waiting", waiting,
+      ...(values.next ? ["--next", values.next] : []),
+      ...(values.router ? ["--router", values.router] : []),
+      ...(capture ? ["--json"] : []),
+    ], capture);
+  const then = values.waiting ?? "the worker";
+  if (failure) {
+    // start_timeout: it is up, but at a dialog (or slow). With any other error this worker is not ours, or not there.
+    if (failure !== "start_timeout" || !running(worker)) return started.status ?? 1;
+    return queueDispatched(worker, text, then, add);
+  }
+  process.stdout.write(`${worker} is ready; watch it with: am open ${worker}\n`);
 
   const sent = am(["prompt", worker, "-"], false, text);
-  const waiting = sent.status === 0 ? (values.waiting ?? "the worker") : `the user: ${worker} started but did not confirm the task (see am status ${worker}); it was not resent`;
-  const added = am([
-    "ledger", "add", title, "--worker", worker, "--waiting", waiting,
-    ...(values.next ? ["--next", values.next] : []),
-    ...(values.router ? ["--router", values.router] : []),
-  ]);
+  const added = add(sent.status === 0 ? then : `the user: ${worker} started but did not confirm the task (see am status ${worker}); it was not resent`);
   if (added.status !== 0) {
     process.stderr.write(`am router: ${worker} ${sent.status === 0 ? "has the task" : "is running"}, but the ledger has no record of it; add it with am ledger add\n`);
     return added.status ?? 1;

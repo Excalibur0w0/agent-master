@@ -12,7 +12,8 @@ const bin = resolve(import.meta.dirname, "../bin/am-router");
 /**
  * A stand-in for am that logs its arguments; `status` reports $AM_STATE when set, or no such agent;
  * `ledger list` prints $AM_LEDGER_LIST (default: an empty ledger); `ledger import` fails when $AM_IMPORT_FAIL is set;
- * `list --saved` prints $AM_SAVED; a prompt's text is kept in $AM_LOG.prompt; `start` fails when $AM_START_FAIL is set and
+ * `list --saved` prints $AM_SAVED; a prompt's text is kept in $AM_LOG.prompt; `start` fails with code $AM_START_FAIL when
+ * it is set, and `ledger add` when $AM_ADD_FAIL is; `start`
  * logs its $AM_CONTRACT to $AM_LOG.env; `prompt` fails when $AM_PROMPT_FAIL is set.
  */
 async function fakeAm(dir: string): Promise<string> {
@@ -28,13 +29,18 @@ fi
 if [ "$1 $2" = "list --saved" ]; then echo "\${AM_SAVED:-[]}"; fi
 if [ "$1" = start ]; then
   printf 'AM_CONTRACT=%s\\n' "$AM_CONTRACT" >> "$AM_LOG.env"
-  [ -z "$AM_START_FAIL" ] || { echo "claude did not finish starting in time" >&2; exit 1; }
+  [ -z "$AM_START_FAIL" ] || { echo 'am: warning: Claude has not trusted it yet' >&2; echo "{\\"error\\":\\"$AM_START_FAIL\\",\\"message\\":\\"claude did not finish starting\\"}" >&2; exit 1; }
 fi
 if [ "$1" = prompt ]; then
   cat > "$AM_LOG.prompt"
+  [ -z "$AM_PROMPT_OUT" ] || echo "$AM_PROMPT_OUT"
   [ -z "$AM_PROMPT_FAIL" ] || { echo "it did not confirm receiving the prompt" >&2; exit 1; }
 fi
 if [ "$1 $2" = "ledger list" ]; then echo "\${AM_LEDGER_LIST:-[]}"; fi
+if [ "$1 $2" = "ledger add" ]; then
+  [ -z "$AM_ADD_FAIL" ] || { echo "the ledger is locked" >&2; exit 1; }
+  case "$*" in *--json*) echo '{"id":7}' ;; esac
+fi
 if [ "$1 $2" = "ledger import" ]; then
   [ -z "$AM_IMPORT_FAIL" ] || { echo "cannot read it" >&2; exit 1; }
   echo "imported 1 task(s)"
@@ -211,7 +217,7 @@ test("dispatch starts a worker, hands it the task and adds the task to the ledge
   );
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(await calls(), [
-    `start fix-login --profile claude --cwd ${dir} -- --foo`,
+    `start fix-login --profile claude --cwd ${dir} --json -- --foo`,
     "prompt fix-login -",
     "ledger add 修登录 --worker fix-login --waiting the worker --next 汇报后转告用户",
   ]);
@@ -219,24 +225,59 @@ test("dispatch starts a worker, hands it the task and adds the task to the ledge
   assert.equal(await readFile(join(dir, "log.env"), "utf8"), "AM_CONTRACT=/rules/contract.md\n", "the worker gets the user's contract");
 
   assert.equal((await run(["dispatch", "w2", "看下", "日志", "--title", "t", "--kind", "codex", "--waiting", "nobody", "--router", "ops"])).code, 0);
-  assert.deepEqual((await calls()).slice(3), ["start w2 --kind codex", "prompt w2 -", "ledger add t --worker w2 --waiting nobody --router ops"]);
+  assert.deepEqual((await calls()).slice(3), ["start w2 --kind codex --json", "prompt w2 -", "ledger add t --worker w2 --waiting nobody --router ops"]);
   assert.equal(await readFile(join(dir, "log.prompt"), "utf8"), "看下 日志");
 });
 
 test("dispatch: a worker that fails to start leaves the ledger alone; one that does not take the task is still recorded", async () => {
   const { run, calls } = await setup();
-  const failed = await run(["dispatch", "a", "-", "--title", "t", "--profile", "claude"], { AM_START_FAIL: "1" }, "task");
+  // Such as a name already taken: whatever runs under it must not get the task.
+  const failed = await run(["dispatch", "a", "-", "--title", "t", "--profile", "claude"], { AM_START_FAIL: "name_taken", AM_STATE: "starting" }, "task");
   assert.equal(failed.code, 1);
-  assert.match(failed.stderr, /did not finish starting/);
-  assert.deepEqual(await calls(), ["start a --profile claude"]);
+  assert.equal(failed.stderr, "am: warning: Claude has not trusted it yet\nam: claude did not finish starting\n");
+  assert.deepEqual(await calls(), ["start a --profile claude --json"]);
+  // It gave up and is gone.
+  assert.equal((await run(["dispatch", "a", "-", "--title", "t", "--profile", "claude"], { AM_START_FAIL: "start_timeout", AM_STATE: "exited" }, "task")).code, 1);
+  assert.deepEqual((await calls()).slice(1), ["start a --profile claude --json", "status a --json"]);
 
   const unconfirmed = await run(["dispatch", "b", "-", "--title", "t", "--profile", "claude"], { AM_PROMPT_FAIL: "1" }, "task");
   assert.equal(unconfirmed.code, 1);
-  assert.deepEqual((await calls()).slice(1), [
-    "start b --profile claude",
+  assert.deepEqual((await calls()).slice(3), [
+    "start b --profile claude --json",
     "prompt b -",
     "ledger add t --worker b --waiting the user: b started but did not confirm the task (see am status b); it was not resent",
   ]);
+});
+
+test("dispatch: a worker held at a dialog on its first start gets the task once the user answered it, and the ledger has it at once", async () => {
+  const { dir, run, calls } = await setup();
+  const held = await run(["dispatch", "c", "-", "--title", "t", "--profile", "claude", "--next", "n", "--router", "ops"], { AM_START_FAIL: "start_timeout", AM_STATE: "starting" }, "task\n");
+  assert.equal(held.code, 0, held.stderr);
+  const waiting = "the user: c is held at a dialog on its first start (trusting the folder, or logging in): answer it in am open c; the task is then sent by itself";
+  assert.deepEqual(await calls(), [
+    "start c --profile claude --json",
+    "status c --json",
+    `ledger add t --worker c --waiting ${waiting} --next n --router ops --json`,
+    'prompt c - --queue --after ["ledger","update","7","--waiting","the worker"] --json',
+  ]);
+  assert.equal(await readFile(join(dir, "log.prompt"), "utf8"), "task\n");
+  assert.match(held.stdout, /^c is held at a dialog .*am open c\.\nThe task is queued \(task #7\) and sent once they have\.\n$/);
+
+  // Without a ledger record the task is still queued, and that is said.
+  const unrecorded = await run(["dispatch", "d", "-", "--title", "t", "--profile", "claude"], { AM_START_FAIL: "start_timeout", AM_STATE: "starting", AM_ADD_FAIL: "1" }, "task");
+  assert.equal(unrecorded.code, 1);
+  assert.equal((await calls()).at(-1), "prompt d - --queue --json");
+  assert.match(unrecorded.stderr, /the ledger is locked/);
+  assert.match(unrecorded.stdout, /ledger has no record of it/);
+
+  // Not a dialog after all: it got through meanwhile and took the task at once.
+  const slow = await run(["dispatch", "f", "-", "--title", "t", "--profile", "claude"], { AM_START_FAIL: "start_timeout", AM_STATE: "idle", AM_PROMPT_OUT: '{"queuedId":null}' }, "task");
+  assert.deepEqual([slow.code, slow.stdout], [0, "f was slow to start; it has the task (task #7)\n"]);
+
+  // It could not be queued: the ledger says so.
+  const unqueued = await run(["dispatch", "e", "-", "--title", "t", "--profile", "claude"], { AM_START_FAIL: "start_timeout", AM_STATE: "starting", AM_PROMPT_FAIL: "1" }, "task");
+  assert.equal(unqueued.code, 1);
+  assert.match((await calls()).at(-1)!, /^ledger update 7 --waiting the user: e is held at a dialog, and the task could not be queued/);
 });
 
 test("dispatch refuses an incomplete request before touching am", async () => {

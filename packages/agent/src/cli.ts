@@ -53,9 +53,12 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
   am status <name>                      One agent's state
   am prompt <name> <text|-> [--wait] [--timeout MS]
                                         Send a task (- reads stdin); --wait returns once idle, blocked or stalled
-  am wait <name> [--until idle,blocked,stalled] [--timeout MS] [--read]
+  am wait <name> [--until idle,blocked,stalled] [--timeout MS] [--read] [--turn]
                                         Wait for a state; a stall is reported once, the next wait waits for news
                                         --read: when it is idle, also print its final reply (what am read prints)
+                                        An agent whose turn ended with background tasks still running (claude) goes on
+                                        by itself, so it is not idle yet, for up to stallAfterMinutes; --turn: return
+                                        as its turn ends all the same (it was asked to start a dev server, say)
   am read <name>                        Final reply of its latest turn
   am approve <name> [--always]          Approve its pending permission request
   am deny <name>                        Deny it
@@ -144,6 +147,7 @@ async function main(argv: string[]): Promise<number> {
       all: { type: "boolean" },
       always: { type: "boolean" },
       read: { type: "boolean" },
+      turn: { type: "boolean" },
       project: { type: "string" },
       json: { type: "boolean" },
     },
@@ -246,7 +250,7 @@ async function main(argv: string[]): Promise<number> {
     }
     case "wait": {
       const until = values.until ? (values.until.split(",") as AgentState[]) : undefined;
-      const agent = await waitAgent(tmux, target(), until, timeoutMs);
+      const agent = await waitAgent(tmux, target(), until, timeoutMs, { turn: values.turn });
       const line = `${agent.name}: ${agent.state}${agent.detail ? ` (${agent.detail})` : ""}`;
       if (!values.read || agent.state !== "idle") {
         out(agent, line);

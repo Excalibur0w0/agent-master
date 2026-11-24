@@ -39,6 +39,8 @@ function record(overrides: Partial<AgentRecord>): AgentRecord {
     contract: "",
     contractSent: "",
     stallSeen: "",
+    background: "",
+    backgroundOld: "",
     ...overrides,
   };
 }

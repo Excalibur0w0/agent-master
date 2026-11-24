@@ -33,7 +33,7 @@ export interface AgentRecord {
   turn: string;
   /** Transcript size when the latest prompt was submitted. */
   offset: number;
-  /** Count of prompts the agent accepted (claude, codex, dsh); only UserPromptSubmit moves it. */
+  /** Count of prompts the agent accepted (claude, codex, dsh); only UserPromptSubmit moves it, and a background task's notice does not. */
   seq: number;
   /** What the agent is blocked on: a checksum of tool name + input (claude, codex), or an approval id or `question-N` (dsh). */
   pending: string;
@@ -50,6 +50,9 @@ export interface AgentRecord {
   contractSent: string;
   /** The last stall an `am wait` reported, so the next one waits for something new. */
   stallSeen: string;
+  /** claude: background tasks running when its latest turn ended, and those left by earlier requests (JSON, see the hook). */
+  background: string;
+  backgroundOld: string;
 }
 
 const FIELDS = {
@@ -78,6 +81,8 @@ const FIELDS = {
   contract: "#{@am_contract}",
   contractSent: "#{@am_contract_sent}",
   stallSeen: "#{@am_stall_seen}",
+  background: "#{@am_bg}",
+  backgroundOld: "#{@am_bg_old}",
 } as const;
 
 // tmux escapes control characters in format output (e.g. \x1f becomes "\037"), but passes tabs through.

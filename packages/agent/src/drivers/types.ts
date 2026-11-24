@@ -21,6 +21,11 @@ export interface StatusView {
   stallId?: string;
   /** When the agent last wrote anything (ms since epoch), for the no-output check; left out when the driver cannot tell. */
   activity?: number;
+  /**
+   * The turn ended, but this many background tasks it started still run: the agent goes on by
+   * itself when they are done, and takes a prompt meanwhile. `activity` is when the turn ended.
+   */
+  background?: number;
 }
 
 const STALL_LABELS: Record<StallReason, string> = { usage_limit: "usage limit", content_filter: "content filter", error: "error", no_output: "no output" };

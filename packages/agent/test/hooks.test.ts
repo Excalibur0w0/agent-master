@@ -62,6 +62,37 @@ test("claude hook maps lifecycle events onto the pane", async () => {
   assert.deepEqual(await pick(pane, "state", "seq"), { state: "idle", seq: 1 }, "only UserPromptSubmit moves seq");
 });
 
+test("claude hook records the background tasks a turn leaves, and tells a task's notice from a prompt", async () => {
+  const pane = await agentPane("c4", "claude");
+  const base = { session_id: "s-4", transcript_path: "/nonexistent.jsonl" };
+  const task = (id: string, description: string) => ({ id, type: "shell", status: "running", description, command: "x" });
+  await fire("claude", pane, { ...base, hook_event_name: "SessionStart", source: "startup" });
+  await fire("claude", pane, { ...base, hook_event_name: "UserPromptSubmit", prompt_id: "p-1", prompt: "起服务，再构建" });
+  await fire("claude", pane, { ...base, hook_event_name: "Stop", background_tasks: [task("srv", 'dev "server"\t$(x);\n#{pane_id}'), task("bld", `构建${"x".repeat(80)}`)] });
+  const left = await pick(pane, "state", "background", "backgroundOld", "seq");
+  assert.deepEqual([left.state, left.seq, left.backgroundOld], ["idle", 1, "[]"]);
+  assert.deepEqual(JSON.parse(String(left.background)), [{ i: "srv", d: 'dev "server" $(x); #{pane_id}' }, { i: "bld", d: `构建${"x".repeat(58)}` }]);
+
+  // The build ends: Claude goes on with its own notice, which no one sent.
+  await fire("claude", pane, { ...base, hook_event_name: "UserPromptSubmit", prompt_id: "p-2", prompt: "<task-notification>\n<task-id>bld</task-id>" });
+  assert.deepEqual(await pick(pane, "state", "seq", "turn", "backgroundOld"), { state: "working", seq: 1, turn: "p-2", backgroundOld: "[]" });
+  // A prompt typed into that turn confirms itself, and is still the same request.
+  await fire("claude", pane, { ...base, hook_event_name: "UserPromptSubmit", prompt_id: "p-3", prompt: "顺便看下日志" });
+  assert.deepEqual(await pick(pane, "seq", "backgroundOld"), { seq: 2, backgroundOld: "[]" });
+  await fire("claude", pane, { ...base, hook_event_name: "Stop", background_tasks: [task("srv", "dev server")] });
+
+  // A new request: the server is an earlier request's.
+  await fire("claude", pane, { ...base, hook_event_name: "UserPromptSubmit", prompt_id: "p-4", prompt: "下一件" });
+  const next = await pick(pane, "seq", "backgroundOld");
+  assert.deepEqual([next.seq, JSON.parse(String(next.backgroundOld)).map((t: { i: string }) => t.i)], [3, ["srv"]]);
+  await fire("claude", pane, { ...base, hook_event_name: "Notification", notification_type: "idle_prompt" });
+  assert.equal((JSON.parse(String((await pick(pane, "background")).background)) as unknown[]).length, 1, "only Stop knows the tasks");
+  await fire("claude", pane, { ...base, hook_event_name: "Stop" });
+  assert.equal((await pick(pane, "background")).background, "[]", "an older Claude Code lists none");
+  await fire("claude", pane, { ...base, hook_event_name: "SessionStart", source: "clear" });
+  assert.deepEqual(await pick(pane, "background", "backgroundOld"), { background: "[]", backgroundOld: "[]" });
+});
+
 test("a parallel tool finishing does not hide a pending permission request", async () => {
   const pane = await agentPane("c2", "claude");
   const base = { session_id: "s-2", transcript_path: "/nonexistent.jsonl" };

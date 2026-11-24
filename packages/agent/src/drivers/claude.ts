@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { AgentRecord } from "../registry.ts";
 import { claudeFailure, claudeFinalReply, claudeInterrupted, jsonLines, modifiedAt, readFrom } from "../transcript.ts";
 import { AmError, poll, shellCommand, sleep, stalledView, type Driver } from "./types.ts";
 
@@ -101,6 +102,10 @@ export const claude: Driver = {
         const written = await modifiedAt(record.transcript);
         return { state: "working", detail: record.detail, activity: Math.max(written ?? 0, record.updatedAt * 1000) };
       }
+      const tasks = record.state === "idle" ? backgroundTasks(record) : [];
+      if (tasks.length) {
+        return { state: "working", detail: tasks.map((t) => t.d || t.i).join("; "), background: tasks.length, activity: record.updatedAt * 1000 };
+      }
     }
     return { state: record.state, detail: record.detail };
   },
@@ -141,6 +146,23 @@ const MIN_TURN_AGE_MS = 3000;
 
 /** How long an API error must stand as the turn's last word before a working Claude counts as stalled. */
 const FAILURE_SETTLE_MS = 20_000;
+
+/**
+ * The background tasks the latest request left running when its turn ended, as Claude Code's Stop
+ * event lists them. Ones an earlier request left (a dev server, say) do not count.
+ */
+export function backgroundTasks(record: Pick<AgentRecord, "background" | "backgroundOld">): Array<{ i: string; d: string }> {
+  const parse = (text: string): Array<{ i: string; d: string }> => {
+    try {
+      const value = JSON.parse(text);
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  };
+  const old = new Set(parse(record.backgroundOld).map((t) => t.i));
+  return parse(record.background).filter((t) => !old.has(t.i));
+}
 
 /** Native arguments minus any choice of conversation, so `--resume <id>` decides it alone. */
 export function withoutSessionChoice(args: string[]): string[] {

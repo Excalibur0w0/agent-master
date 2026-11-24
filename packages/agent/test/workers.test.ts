@@ -11,9 +11,9 @@ import { after, before, test } from "node:test";
 
 import { Tmux } from "@agent-master/tmux";
 
-import { forgetAgent, noOutputStall, promptAgent, resolveStart, resumeAgent, savedAgents, startAgent, stopAgent, waitAgent, withContract } from "../src/agent.ts";
+import { backgroundWait, forgetAgent, interruptAgent, noOutputStall, promptAgent, resolveStart, resumeAgent, savedAgents, startAgent, stopAgent, waitAgent, withContract } from "../src/agent.ts";
 import { loadConfig } from "../src/config.ts";
-import { claude } from "../src/drivers/claude.ts";
+import { backgroundTasks, claude } from "../src/drivers/claude.ts";
 import { codex } from "../src/drivers/codex.ts";
 import { opencode, opencodeStall } from "../src/drivers/opencode.ts";
 import { findRecord, writeRecord, type AgentRecord } from "../src/registry.ts";
@@ -35,7 +35,7 @@ after(() => tmux.killServer());
 
 function record(overrides: Partial<AgentRecord>): AgentRecord {
   const base = { paneId: "%1", tmuxSession: "am-a", name: "a", kind: "claude", cwd: "/tmp", startedAt: 0, paneDead: false, state: "idle", detail: "", event: "" };
-  const strings = ["session", "transcript", "turn", "pending", "url", "auth", "trustOverride", "model", "profile", "contract", "contractSent", "stallSeen"];
+  const strings = ["session", "transcript", "turn", "pending", "url", "auth", "trustOverride", "model", "profile", "contract", "contractSent", "stallSeen", "background", "backgroundOld"];
   return { ...base, ...Object.fromEntries(strings.map((k) => [k, ""])), updatedAt: 0, offset: 0, seq: 0, ...overrides } as AgentRecord;
 }
 
@@ -176,6 +176,39 @@ test("am wait reports a stall once, then waits for something new", async () => {
   await writeRecord(tmux, pane, { turn: "t2" });
   assert.equal((await waitAgent(tmux, "stuck", undefined, 5000)).state, "stalled");
   assert.equal((await findRecord(tmux, pane)).stallSeen, "t2:t1");
+});
+
+test("a Claude turn that ended with background tasks of its request still running is not idle yet", async () => {
+  const tasks = (...ids: string[]) => JSON.stringify(ids.map((i) => ({ i, d: `run ${i}` })));
+  assert.deepEqual(backgroundTasks({ background: tasks("server", "build"), backgroundOld: tasks("server") }), [{ i: "build", d: "run build" }], "what an earlier request left running does not count");
+  assert.deepEqual(backgroundTasks({ background: "", backgroundOld: "not json" }), []);
+
+  const status = await claude.status(record({ state: "idle", updatedAt: 100, background: tasks("build") }));
+  assert.deepEqual(status, { state: "working", detail: "run build", background: 1, activity: 100_000 });
+  assert.equal((await claude.status(record({ state: "idle", background: tasks("build"), backgroundOld: tasks("build") }))).state, "idle");
+
+  const waiting = backgroundWait(status, 100_000 + 14 * 60_000, 15 * 60_000);
+  assert.deepEqual([waiting.state, waiting.detail], ["working", "turn ended, waiting for 1 background task: run build"]);
+  assert.equal(noOutputStall(waiting, 100_000 + 60 * 60_000, 15 * 60_000).state, "working", "waiting for a task is not a stall");
+  const outlived = backgroundWait({ ...status, background: 2 }, 100_000 + 15 * 60_000, 15 * 60_000);
+  assert.deepEqual([outlived.state, outlived.detail], ["idle", "2 background tasks still running: run build"], "one that never ends does not hold a wait for good");
+});
+
+test("am wait waits through background tasks, --turn does not, and the agent takes a prompt meanwhile", async () => {
+  const pane = await tmux.newWindow("base", "sh");
+  const now = Math.floor(Date.now() / 1000);
+  await tmux.setPaneOptions(pane, { "@am_name": "builder", "@am_kind": "claude", "@am_state": "idle", "@am_started": "1", "@am_ts": String(now), "@am_bg": '[{"i":"b1","d":"等构建"}]', "@am_bg_old": "[]" });
+  await assert.rejects(waitAgent(tmux, "builder", undefined, 1000), /timed out/);
+  const turn = await waitAgent(tmux, "builder", undefined, 5000, { turn: true });
+  assert.deepEqual([turn.state, turn.background], ["idle", 1]);
+  await assert.rejects(interruptAgent(tmux, "builder"), /turn has ended; only background tasks are running/);
+  // It reached the send: no agent is there to confirm, but it was not refused as busy.
+  await assert.rejects(promptAgent(tmux, "builder", "hi"), (error: { code?: string }) => error.code === "prompt_stalled");
+
+  const waited = waitAgent(tmux, "builder", undefined, 5000);
+  await tmux.setPaneOptions(pane, { "@am_bg": "[]" });
+  const done = await waited;
+  assert.deepEqual([done.state, done.background], ["idle", undefined]);
 });
 
 /** A stand-in for Claude Code: reports SessionStart through the pane, records its argv, and acknowledges every line typed into it. */

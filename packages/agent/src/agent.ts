@@ -29,6 +29,8 @@ export interface AgentView {
   /** Why it is `stalled`. */
   stall?: StallReason;
   stallId?: string;
+  /** Its turn ended with this many background tasks of the request still running. */
+  background?: number;
 }
 
 const SETTLED: AgentState[] = ["idle", "blocked", "stalled", "exited"];
@@ -39,9 +41,22 @@ async function stallAfterMs(): Promise<number> {
   return minutes * 60_000;
 }
 
+/**
+ * An agent whose turn ended while background tasks it started still run is `working`: it goes on by
+ * itself when they are done. Tasks that outlive `afterMs` are taken for ones that never end (a dev
+ * server): the agent counts as idle then, with the tasks still named.
+ */
+export function backgroundWait(status: StatusView, now: number, afterMs: number): StatusView {
+  if (!status.background) return status;
+  const tasks = `${status.background} background task${status.background === 1 ? "" : "s"}`;
+  return now - (status.activity ?? now) < afterMs
+    ? { ...status, detail: `turn ended, waiting for ${tasks}: ${status.detail}` }
+    : { ...status, state: "idle", detail: `${tasks} still running: ${status.detail}` };
+}
+
 /** A working agent that has written nothing for `afterMs` is reported as stalled: no_output. */
 export function noOutputStall(status: StatusView, now: number, afterMs: number): StatusView {
-  if (status.state !== "working" || !status.activity || now - status.activity < afterMs) return status;
+  if (status.state !== "working" || status.background || !status.activity || now - status.activity < afterMs) return status;
   const minutes = Math.floor((now - status.activity) / 60_000);
   return { state: "stalled", detail: `no output for ${minutes}m`, stall: "no_output", stallId: `no_output:${status.activity}` };
 }
@@ -52,7 +67,8 @@ export function sessionName(agent: string): string {
 }
 
 export async function view(record: AgentRecord): Promise<AgentView> {
-  const status = noOutputStall(await DRIVERS[record.kind].status(record), Date.now(), await stallAfterMs());
+  const afterMs = await stallAfterMs();
+  const status = noOutputStall(backgroundWait(await DRIVERS[record.kind].status(record), Date.now(), afterMs), Date.now(), afterMs);
   await syncSession(record);
   return {
     name: record.name,
@@ -68,6 +84,7 @@ export async function view(record: AgentRecord): Promise<AgentView> {
     profile: record.profile,
     contract: record.contract,
     ...(status.stall ? { stall: status.stall, stallId: status.stallId } : {}),
+    ...(status.background ? { background: status.background } : {}),
   };
 }
 
@@ -371,12 +388,17 @@ export async function forgetAgent(name: string): Promise<void> {
   if (!(await removeSaved(name))) throw new AmError("not_found", `am has no record of ${name}`);
 }
 
+export interface WaitOptions {
+  /** Return as soon as its turn ends, even if background tasks it started still run. */
+  turn?: boolean;
+}
+
 /**
  * Waits until the agent reaches one of `until` (or exits). A stall is reported
  * once: an `am wait` that returns it marks it seen, and later waits sleep
  * through that same stall until something new happens.
  */
-export async function waitAgent(tmux: Tmux, target: string, until: AgentState[] = SETTLED, timeoutMs = 0): Promise<AgentView> {
+export async function waitAgent(tmux: Tmux, target: string, until: AgentState[] = SETTLED, timeoutMs = 0, options: WaitOptions = {}): Promise<AgentView> {
   const deadline = timeoutMs ? Date.now() + timeoutMs : 0;
   const result = await poll(async () => {
     const record = await findRecord(tmux, target).catch((error) => {
@@ -384,7 +406,8 @@ export async function waitAgent(tmux: Tmux, target: string, until: AgentState[] 
       throw error;
     });
     if (!record) return { state: "exited" } as AgentView;
-    const current = await view(record);
+    const seen = await view(record);
+    const current: AgentView = options.turn && seen.background ? { ...seen, state: "idle" } : seen;
     if (current.state === "stalled" && current.stallId && current.stallId === record.stallSeen) return undefined;
     if (until.includes(current.state) || current.state === "exited") {
       if (current.state === "stalled" && current.stallId) await writeRecord(tmux, record.paneId, { stallSeen: current.stallId });
@@ -425,6 +448,8 @@ export async function releaseSendLock(tmux: Tmux, paneId: string, token: string)
 }
 
 function assertIdle(record: AgentRecord, current: AgentView): void {
+  // Its turn ended; only background tasks are left, and it takes input meanwhile.
+  if (current.background) return;
   if (current.state === "blocked") throw new AmError("agent_blocked", `${record.name} is waiting for a decision (${current.detail}); handle it first: am approve / am deny`);
   if (current.state === "working") throw new AmError("agent_busy", `${record.name} is still working; run am wait ${record.name} first`);
   // A turn that failed (usage limit, filter, error) has ended: the agent takes input again.
@@ -589,6 +614,7 @@ export async function denyAgent(tmux: Tmux, target: string): Promise<void> {
 export async function interruptAgent(tmux: Tmux, target: string): Promise<AgentView> {
   const record = await findRecord(tmux, target);
   const current = await view(record);
+  if (current.background) throw new AmError("not_working", `${record.name}'s turn has ended; only background tasks are running (${current.detail})`);
   if (current.state !== "working" && current.stall !== "no_output") throw new AmError("not_working", `${record.name} is not working`);
   await DRIVERS[record.kind].interrupt(tmux, record);
   const settled = await poll(async () => {

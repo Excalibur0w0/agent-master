@@ -35,6 +35,7 @@ import { AmError } from "./drivers/index.ts";
 import { installGlobal, installProject, uninstallGlobal } from "./install.ts";
 import { amCommand, clearQueue, listQueued } from "./queue.ts";
 import { AGENT_KINDS, type AgentKind, type AgentState } from "./registry.ts";
+import { asksHelp, usageOf } from "./usage.ts";
 
 const USAGE = `am — start, drive and coordinate coding agents (claude / codex / opencode / dsh) in tmux
 
@@ -82,20 +83,32 @@ const USAGE = `am — start, drive and coordinate coding agents (claude / codex 
                                         Install the am command and the explicit entry points (/am, $am); --project for one project only
 
   am help | am -h                       This text, including the commands below that other packages add to am
+  am <command> -h                       Only what it says about that command
 
   <name> can also be a pane id (e.g. %12). Every command accepts --json.
   States: starting / idle / working / blocked / stalled / exited / unknown
   stalled: its turn will not finish without you: usage limit, content filter, an API error, or no output for
   stallAfterMinutes (default 15). Settings and profiles: ${configPath()}`;
 
-/** am's own usage, then each extension's (`<executable> help`). */
+/** An extension's usage (`<executable> help`). */
+function extensionUsage(command: string, bin: string): string {
+  const help = spawnSync(bin, ["help"], { encoding: "utf8", timeout: 15_000 });
+  return help.status === 0 && help.stdout.trim() ? help.stdout.trimEnd() : `am ${command}: no usage available (${bin} help failed)`;
+}
+
+/** am's own usage, then each extension's. */
 function fullUsage(): string {
-  const sections = [USAGE];
-  for (const [command, bin] of extensions()) {
-    const help = spawnSync(bin, ["help"], { encoding: "utf8", timeout: 15_000 });
-    sections.push(help.status === 0 && help.stdout.trim() ? help.stdout.trimEnd() : `am ${command}: no usage available (${bin} help failed)`);
-  }
-  return sections.join("\n\n");
+  return [USAGE, ...[...extensions()].map(([command, bin]) => extensionUsage(command, bin))].join("\n\n");
+}
+
+/** `am <command> ... -h`, for am's own commands and the extensions' alike. */
+function commandUsage(command: string, args: string[], bin: string | undefined): string {
+  if (["help", "-h", "--help"].includes(command)) return fullUsage();
+  const option = args.findIndex((arg) => arg.startsWith("-"));
+  const words = ["am", command, ...args.slice(0, option < 0 ? args.length : option)];
+  // am router -h: the whole of it.
+  if (bin) return ((usage) => usageOf(usage, words, 2) ?? usage)(extensionUsage(command, bin));
+  return usageOf(USAGE, words) ?? fullUsage();
 }
 
 /** `--after`: an am command's arguments. */
@@ -137,6 +150,10 @@ function savedTable(agents: SavedView[]): string {
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   const extension = command && !BUILTIN.has(command) ? extensions().get(command) : undefined;
+  if (command && asksHelp(rest)) {
+    process.stdout.write(`${commandUsage(command, rest, extension)}\n`);
+    return 0;
+  }
   if (extension) {
     // Extensions drive agents through am's command line: point them at this am.
     const run = spawnSync(extension, rest, { stdio: "inherit", env: { ...process.env, AM_BIN: amCommand() } });

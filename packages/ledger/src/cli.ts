@@ -73,18 +73,6 @@ const USAGE = `am ledger — the router's ledger of work in flight, and the mess
   How many tasks are in progress at once is up to the user: nothing caps it; queue and pause only when they say.
   Database: ${ledgerPath()} (AM_LEDGER_DB)`;
 
-/** What USAGE says about one command ("list", "inbox add", or "inbox" for all of those); the whole of it for no command, or one it does not have. */
-function usageOf(command: string): string {
-  let within = false;
-  const own = USAGE.split("\n").filter((line) => {
-    // A command's own line starts at two spaces; the lines under it are indented further.
-    if (line.startsWith("  am ledger ")) within = `${line} `.startsWith(`  am ledger ${command} `);
-    else if (!line.startsWith("   ")) within = false;
-    return within;
-  });
-  return command && own.length ? own.join("\n") : USAGE;
-}
-
 const id = (text: string | undefined, prefix: string, what: string): number => {
   const match = text ? new RegExp(`^${prefix}?(\\d+)$`).exec(text) : null;
   if (!match) throw new LedgerError("usage", `${what} needs an id, e.g. ${prefix}3`);
@@ -129,17 +117,14 @@ async function main(argv: string[]): Promise<number> {
       file: { type: "string" },
       auto: { type: "boolean" },
       timeout: { type: "string" },
-      help: { type: "boolean", short: "h" },
     },
   });
   const router = values.router ?? (process.env.AM_ROUTER || "router");
   const out = (data: unknown, text: string) => process.stdout.write(`${values.json ? JSON.stringify(data) : text}\n`);
   const note = (text: string) => process.stderr.write(`am ledger: ${text}\n`);
 
-  const asked = command === "help" || command === "-h" || command === "--help";
-  if (values.help || asked || (!inbox && command === undefined)) {
-    const named = [...(inbox ? ["inbox"] : []), ...(asked || command === undefined ? [] : [command])];
-    process.stdout.write(`${usageOf(named.join(" "))}\n`);
+  if (!inbox && (command === undefined || command === "help" || command === "-h" || command === "--help")) {
+    process.stdout.write(`${USAGE}\n`);
     return 0;
   }
   const db = openLedger();

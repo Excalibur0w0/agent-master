@@ -148,30 +148,6 @@ esac
   return { dir, run, calls };
 }
 
-test("am ledger: -h after a command explains that command, and does nothing else", async () => {
-  const { run } = await setup();
-  const help = async (...args: string[]) => {
-    const { code, stdout, stderr } = await run(args);
-    assert.deepEqual([code, stderr], [0, ""], args.join(" "));
-    return stdout;
-  };
-  const list = await help("list", "-h");
-  assert.match(list, /^  am ledger list \[--paused \| --all\] /);
-  assert.match(list, /--paused: the paused ones/);
-  assert.doesNotMatch(list, /am ledger (add|show|inbox)/);
-  assert.equal(await help("list", "--paused", "--help"), list);
-  assert.equal((await help("show", "-h")).match(/am ledger show/g)?.length, 2, "both forms");
-  assert.match(await help("inbox", "take", "-h"), /^  am ledger inbox take <n> /);
-  const inbox = await help("inbox", "-h");
-  assert.match(inbox, /^  am ledger inbox list [^]*\n  am ledger inbox take /);
-  assert.doesNotMatch(inbox, /Every command takes/);
-  const all = await help("-h");
-  assert.match(all, /^am ledger — [^]*Database: /);
-  assert.equal(await help("nope", "-h"), all);
-  assert.match(await help("add", "标题", "-h"), /^  am ledger add <title> /);
-  assert.equal((await run(["list"])).stdout, "no tasks\n", "add -h added nothing");
-});
-
 test("am ledger: the router writes title, who it waits on and the next step; am fills in the worker", async () => {
   const { run } = await setup();
   const added = await run(["add", "修登录", "--worker", "fix-login", "--waiting", "the worker", "--next", "汇报后转告用户", "--json"]);

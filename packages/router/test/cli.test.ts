@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -206,6 +206,26 @@ test("am router ... reaches the router, and am -h documents it with every other 
   const routerHelp = await promisify(execFile)(am, ["router", "help"]);
   assert.match(routerHelp.stdout, /^am router — /);
   await assert.rejects(promisify(execFile)(am, ["router", "nope"]), (error: any) => error.code === 2 && /unknown command: nope/.test(error.stderr));
+});
+
+test("-h after a command that another package adds to am explains that command, and runs nothing", async () => {
+  const { dir } = await setup();
+  const am = async (...args: string[]) => (await promisify(execFile)(resolve(import.meta.dirname, "../../agent/bin/am"), args, { env: { ...process.env, XDG_STATE_HOME: dir, AM_LEDGER_DB: join(dir, "db", "ledger.db") } })).stdout;
+  const dispatch = await am("router", "dispatch", "fix-login", "查一下", "--title", "x", "-h");
+  assert.match(dispatch, /^  am router dispatch <worker> [^]*waiting on the worker, once they have\n$/);
+  assert.doesNotMatch(dispatch, /am router (start|stop) |Everything else/);
+  assert.match(await am("router", "start", "ops", "--help"), /^  am router start \[name\] [^]*\n +--resume continues .*\n.*\n$/);
+  assert.match(await am("watcher", "focus", "add", "x", "-h"), /^  am watcher focus \[name\] [^]*no restart\n$/);
+  const list = await am("ledger", "list", "-h");
+  assert.match(list, /^  am ledger list \[--paused \| --all\] [^]*--paused: the paused ones/);
+  assert.doesNotMatch(list, /am ledger (add|show|inbox)/);
+  assert.equal((await am("ledger", "show", "3", "-h")).match(/am ledger show/g)?.length, 2, "both forms");
+  assert.match(await am("ledger", "inbox", "take", "i7", "-h"), /^  am ledger inbox take <n> /);
+  const inbox = await am("ledger", "inbox", "-h");
+  assert.match(inbox, /^  am ledger inbox list [^]*\n  am ledger inbox take /);
+  assert.doesNotMatch(inbox, /Every command takes|am ledger list/);
+  for (const name of ["router", "watcher", "ledger"]) assert.equal(await am(name, "-h"), await am(name, "help"), name);
+  await assert.rejects(access(join(dir, "db")), "the ledger was not even opened");
 });
 
 test("dispatch starts a worker, hands it the task and adds the task to the ledger, in one step", async () => {

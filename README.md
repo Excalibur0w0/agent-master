@@ -72,6 +72,7 @@ am stop reviewer
 | `am watcher start\|stop\|status\|list\|resume` | 常驻、只读地盯消息，见下文「am watcher」 |
 | `am ledger show\|list\|add\|update\|pause\|start\|close\|inbox …` | router 的台账和待过目消息，见下文「am ledger」 |
 | `am -h` / `am help` | 所有命令的说明，包括 `am router`、`am watcher` |
+| `am <命令> -h` | 只看这条命令的说明，如 `am wait -h`、`am router dispatch -h`、`am ledger list -h` |
 
 所有命令支持 `--json`。每个 agent 一个后台会话，`am list` 的 SESSION 列就是会话名；在会话里可以直接接管（输入、Esc、批准），`am stop` 会连同会话一起关掉。
 
@@ -293,7 +294,7 @@ router 怎么知道自己的角色：`am router start` 在 `~/.local/state/agent
 
 - 第一次启动会停在 Claude 的目录信任确认上，另开终端 `am open router` 确认一次即可。
 - 后台等待依赖「后台命令结束时唤醒 agent」，目前只在 Claude Code 上验证过。用其他 agent 当 router 时，它派完活不会等待，你下次说话时它再查进度。
-- 分层约束：router 只通过 am 的命令行驱动 agent，am 不知道 router 的存在（测试会检查 `packages/agent` 没有引用它）。`am router …` 能用，是因为 router 包在自己的 `package.json` 里声明了 `"am": {"commands": {"router": "bin/am-router"}}`：am 只认这种声明，把命令原样转交（`am watcher` 同理），`am -h` 再调各自的 `help` 拼出完整说明。包还可以声明 `"afterResumeAll": ["watcher", "resume"]`：`am resume --all` 恢复完 agent 后运行这一步（必须是这个包自己的命令），把不是 agent 的部分也拉回来。
+- 分层约束：router 只通过 am 的命令行驱动 agent，am 不知道 router 的存在（测试会检查 `packages/agent` 没有引用它）。`am router …` 能用，是因为 router 包在自己的 `package.json` 里声明了 `"am": {"commands": {"router": "bin/am-router"}}`：am 只认这种声明，把命令原样转交（`am watcher` 同理），`am -h` 再调各自的 `help` 拼出完整说明。`am router start -h` 这种带 `-h` 的也由 am 回答，从 `help` 的输出里摘出那条命令的部分，所以各个包只要写好 `help`，不用自己处理 `-h`。包还可以声明 `"afterResumeAll": ["watcher", "resume"]`：`am resume --all` 恢复完 agent 后运行这一步（必须是这个包自己的命令），把不是 agent 的部分也拉回来。
 
 ## am watcher：常驻、只读地盯消息
 

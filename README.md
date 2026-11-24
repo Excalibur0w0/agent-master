@@ -244,7 +244,7 @@ hook（dsh 是插件）把状态写在 agent 所在 pane 的 `@am_*` 选项上�
 - Codex 第一次提交前没有任何事件，`am start` 用固定 3 秒作为就绪判断；在此之前会先等两个信任确认都写进 `config.toml`，否则 prompt 的 Enter 会替你答掉确认框。opencode 的界面比 API 晚就绪，`am start` 在 API 就绪后再等 3 秒。
 - Claude / Codex：两个**完全相同**的工具调用（同名同输入）并行等待批准时，先完成的那个会把 blocked 清掉；hook 里没有能区分它们的字段。
 - opencode 的会话按「`am prompt` 确认收到时服务端正在跑的会话」绑定。人在它的界面里切换或新建会话后，`am read` 仍读绑定的那个，直到下一次 `am prompt`；还没收到过 `am prompt` 且空闲时报 `no_session`，不会去猜「最新的会话」（同一项目的其他 opencode 实例共享会话列表）。
-- Codex 的目录信任：在 git 仓库里只认仓库根目录那一条（信任过父目录不算），`-c projects."<dir>".trust_level="trusted"` 也只在 git 仓库外生效（后出现的 `untrusted` 会撤销）。hook 信任按 Codex 源码的算法（`codex-rs` 的 `hook_hash`：规范化 hook 定义的 JSON 做 sha256）逐条核对 `[hooks.state]`，仓库搬家、hook 被禁用都会被识别。这依赖 Codex 0.160 的算法，Codex 改算法后 `am` 会一直等待信任，需要跟着更新。`config.toml` 用 TOML 解析器读取，解析失败按「未信任」处理。
+- Codex 的目录信任：在 git 仓库里只认仓库根目录那一条（信任过父目录不算；附属 worktree 认主工作区的根目录），`-c projects."<dir>".trust_level="trusted"` 也只在 git 仓库外生效（后出现的 `untrusted` 会撤销）。hook 信任按 Codex 源码的算法（`codex-rs` 的 `hook_hash`：规范化 hook 定义的 JSON 做 sha256）逐条核对 `[hooks.state]`，仓库搬家、hook 被禁用都会被识别。这依赖 Codex 0.160 的算法，Codex 改算法后 `am` 会一直等待信任，需要跟着更新。`config.toml` 用 TOML 解析器读取，解析失败按「未信任」处理。
 - `stalled` 的识别依赖各家对话记录 / API 的内部格式（Claude 的 `isApiErrorMessage`、Codex 的 `task_complete.error` 和 `<content_filter_guidance>`、opencode 2 的 `retry` / `error`），它们改格式后要跟着更新；「长时间没有输出」只是超时推断，跑得很久又不写对话记录的命令也会被报出来。
 - Codex 文档只说 SubagentStart/Stop 带 `agent_id`；如果它自己的子 agent 的其他事件不带，这些事件会影响父 agent 的状态。
 - 读写依赖 Claude / Codex 对话记录的内部格式，升级后用 e2e 测试回归。

@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parse as parseToml } from "smol-toml";
@@ -28,10 +28,20 @@ function snake(event: string): string {
   return event.replace(/[A-Z]/g, (c, i) => `${i ? "_" : ""}${c.toLowerCase()}`);
 }
 
-function gitRoot(cwd: string): Promise<string | undefined> {
-  return new Promise((done) =>
-    execFile("git", ["-C", cwd, "rev-parse", "--show-toplevel"], (error, stdout) => done(error ? undefined : stdout.trim() || undefined)),
+/**
+ * The directory Codex records trust for inside git: the repository's root. A linked worktree
+ * shares its main working tree's (the dialog says "Trusting will apply to the repository root",
+ * observed with Codex 0.169); its own directory never gets an answer.
+ */
+export async function codexGitRoot(cwd: string): Promise<string | undefined> {
+  const [top, gitDir, commonDir] = await new Promise<string[]>((done) =>
+    execFile("git", ["-C", cwd, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir"], (error, stdout) => done(error ? [] : stdout.split("\n"))),
   );
+  if (!top) return undefined;
+  // Either may be relative to cwd.
+  const real = (path: string) => realpath(resolve(cwd, path)).catch(() => resolve(cwd, path));
+  const common = await real(commonDir);
+  return (await real(gitDir)) !== common && basename(common) === ".git" ? dirname(common) : top;
 }
 
 function readConfig(): Promise<string> {
@@ -110,8 +120,8 @@ export function trustOverrides(args: string[]): Record<string, TrustLevel> {
 
 /**
  * Codex asks once per project whether to trust it; answers live under
- * [projects."<dir>"]. Inside a git repo the project is the repo root, and
- * neither a trusted parent directory nor a -c override counts there
+ * [projects."<dir>"]. Inside a git repo the project is the repo root (see
+ * codexGitRoot), and neither a trusted parent directory nor a -c override counts there
  * (observed with Codex 0.160). Outside git, overrides take precedence, and the
  * nearest directory with an answer decides.
  */
@@ -130,7 +140,7 @@ async function trustAnswered(record: AgentRecord): Promise<boolean> {
   const config = await readConfig();
   // Stored as JSON: pane options are read back one line per pane.
   const overrides: Record<string, TrustLevel> = record.trustOverride ? JSON.parse(record.trustOverride) : {};
-  return codexDirectoryTrusted(config, record.cwd, await gitRoot(record.cwd), overrides) && (await codexHooksTrusted(config));
+  return codexDirectoryTrusted(config, record.cwd, await codexGitRoot(record.cwd), overrides) && (await codexHooksTrusted(config));
 }
 
 export const codex: Driver = {
@@ -142,7 +152,7 @@ export const codex: Driver = {
   async preflight(cwd, args) {
     const config = await readConfig();
     const warnings: string[] = [];
-    if (!codexDirectoryTrusted(config, cwd, await gitRoot(cwd), trustOverrides(args))) warnings.push(`Codex has not trusted ${cwd} yet: it will ask whether to trust this directory on start; confirm it in its tmux session (am open)`);
+    if (!codexDirectoryTrusted(config, cwd, await codexGitRoot(cwd), trustOverrides(args))) warnings.push(`Codex has not trusted ${cwd} yet: it will ask whether to trust this directory on start; confirm it in its tmux session (am open)`);
     if (!(await codexHooksTrusted(config))) warnings.push("Codex asks once to trust am's hooks the first time it loads them: choose \"Trust all and continue\" in its tmux session (am open)");
     return warnings;
   },

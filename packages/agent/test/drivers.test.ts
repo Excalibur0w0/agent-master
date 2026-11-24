@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { test } from "node:test";
 
 import { claude, claudeHookSettings } from "../src/drivers/claude.ts";
-import { codex, codexDirectoryTrusted, codexHookArgs, codexHookHash, codexHooksTrusted, trustOverrides } from "../src/drivers/codex.ts";
+import { codex, codexDirectoryTrusted, codexGitRoot, codexHookArgs, codexHookHash, codexHooksTrusted, trustOverrides } from "../src/drivers/codex.ts";
 import { dsh, dshModelPatch, dshReporterPatch } from "../src/drivers/dsh.ts";
 import { shellCommand } from "../src/drivers/types.ts";
 import { opencode } from "../src/drivers/opencode.ts";
@@ -178,6 +181,39 @@ test("codex directory trust covers subdirectories of a trusted project", () => {
   // In a git repo only the repo root counts, not a trusted parent.
   assert.equal(codexDirectoryTrusted(config, "/work/repo/sub/git-project/src", "/work/repo/sub/git-project"), false);
   assert.equal(codexDirectoryTrusted(config, "/work/repo/src", "/work/repo"), true);
+});
+
+test("codex trust in a linked worktree is the main working tree's", async () => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "am-codex-trust-")));
+  const git = (...args: string[]) => promisify(execFile)("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args]);
+  const [main, linked, plain] = ["main", "linked", "plain"].map((name) => join(dir, name));
+  await git("init", "-q", main);
+  await git("-C", main, "commit", "-q", "--allow-empty", "-m", "x");
+  await git("-C", main, "worktree", "add", "-q", linked);
+  await Promise.all([mkdir(join(main, "src")), mkdir(join(linked, "src")), mkdir(plain)]);
+  assert.deepEqual(await Promise.all([main, join(main, "src"), linked, join(linked, "src"), plain].map(codexGitRoot)), [main, main, main, main, undefined]);
+
+  // Ready once the main working tree is trusted and am's hooks are, as Codex records it when the dialog is answered.
+  const hooks = ["SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse", "Stop", "Interrupt", "SessionEnd"];
+  const command = shellCommand(fileURLToPath(new URL("../hooks/codex.sh", import.meta.url)));
+  const label = (event: string) => event.replace(/(?!^)[A-Z]/g, (c) => `_${c}`).toLowerCase();
+  const trustedHooks = hooks.map((event) => `[hooks.state."/<session-flags>/config.toml:${label(event)}:0:0"]\ntrusted_hash = "${codexHookHash(event, command)}"\n`).join("\n");
+  const home = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = dir;
+  try {
+    const worker = record({ kind: "codex", state: "starting", cwd: linked });
+    const ready = () => codex.waitReady(undefined as never, async () => worker, Date.now() + 300);
+    await writeFile(join(dir, "config.toml"), trustedHooks);
+    await assert.rejects(ready(), (error: { code?: string }) => error.code === "start_timeout");
+    await writeFile(join(dir, "config.toml"), `[projects.${JSON.stringify(main)}]\ntrust_level = "trusted"\n\n${trustedHooks}`);
+    await ready();
+    assert.deepEqual(await codex.preflight(linked, []), []);
+    await writeFile(join(dir, "config.toml"), `[projects.${JSON.stringify(main)}]\ntrust_level = "untrusted"\n\n${trustedHooks}`);
+    await assert.rejects(ready(), (error: { code?: string }) => error.code === "start_timeout");
+  } finally {
+    if (home === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = home;
+  }
 });
 
 /** A fake opencode server: routes return canned JSON and record POSTs. */

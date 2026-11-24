@@ -1,10 +1,11 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { AgentRecord } from "../registry.ts";
 import { claudeFailure, claudeFinalReply, claudeInterrupted, jsonLines, modifiedAt, readFrom } from "../transcript.ts";
+import { gitRoots } from "./git.ts";
 import { AmError, poll, shellCommand, sleep, stalledView, type Driver } from "./types.ts";
 
 const HOOK = fileURLToPath(new URL("../../hooks/claude.sh", import.meta.url));
@@ -42,16 +43,30 @@ async function settingsFile(): Promise<string> {
   return path;
 }
 
-/** Whether Claude's folder-trust dialog was already accepted for `cwd` or a parent. */
-async function isTrusted(cwd: string): Promise<boolean | undefined> {
+/** Claude's own record of what it has been told, trust included; undefined when it cannot be read. */
+async function readGlobalConfig(): Promise<any> {
   try {
-    const projects = JSON.parse(await readFile(join(homedir(), ".claude.json"), "utf8")).projects ?? {};
-    for (let dir = resolve(cwd); ; dir = dirname(dir)) {
-      if (projects[dir]?.hasTrustDialogAccepted) return true;
-      if (dir === dirname(dir)) return false;
-    }
+    return JSON.parse(await readFile(join(process.env.CLAUDE_CONFIG_DIR || homedir(), ".claude.json"), "utf8"));
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Whether Claude's folder-trust dialog was already accepted for `cwd`. In git the answer stands at the
+ * repository's root, which a linked worktree shares with its main working tree, or at a directory between
+ * that root and `cwd`; a trusted parent of the repository does not count. Outside git, any parent does
+ * (observed with Claude Code 2.1.327).
+ */
+async function isTrusted(cwd: string): Promise<boolean | undefined> {
+  const projects = (await readGlobalConfig())?.projects;
+  if (!projects) return undefined;
+  const git = await gitRoots(cwd);
+  if (git && projects[git.main]?.hasTrustDialogAccepted) return true;
+  // git prints the real path, and Claude goes by that too.
+  for (let dir = await realpath(cwd).catch(() => resolve(cwd)); ; dir = dirname(dir)) {
+    if (projects[dir]?.hasTrustDialogAccepted) return true;
+    if (dir === git?.top || dir === dirname(dir)) return false;
   }
 }
 

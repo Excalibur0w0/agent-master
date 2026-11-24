@@ -1,14 +1,14 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parse as parseToml } from "smol-toml";
 
 import type { AgentRecord } from "../registry.ts";
 import { codexFailure, codexFinalReply, codexInterrupted, codexTurnEnded, jsonLines, modifiedAt, readFrom } from "../transcript.ts";
+import { gitRoots } from "./git.ts";
 import { AmError, poll, shellCommand, sleep, stalledView, type Driver } from "./types.ts";
 
 const HOOK = fileURLToPath(new URL("../../hooks/codex.sh", import.meta.url));
@@ -34,14 +34,7 @@ function snake(event: string): string {
  * observed with Codex 0.169); its own directory never gets an answer.
  */
 export async function codexGitRoot(cwd: string): Promise<string | undefined> {
-  const [top, gitDir, commonDir] = await new Promise<string[]>((done) =>
-    execFile("git", ["-C", cwd, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir"], (error, stdout) => done(error ? [] : stdout.split("\n"))),
-  );
-  if (!top) return undefined;
-  // Either may be relative to cwd.
-  const real = (path: string) => realpath(resolve(cwd, path)).catch(() => resolve(cwd, path));
-  const common = await real(commonDir);
-  return (await real(gitDir)) !== common && basename(common) === ".git" ? dirname(common) : top;
+  return (await gitRoots(cwd))?.main;
 }
 
 function readConfig(): Promise<string> {

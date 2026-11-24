@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -213,6 +213,37 @@ test("codex trust in a linked worktree is the main working tree's", async () => 
   } finally {
     if (home === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = home;
+  }
+});
+
+test("claude trust stands at the repository's root, for linked worktrees too; outside git a trusted parent counts", async () => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "am-claude-trust-")));
+  const git = (...args: string[]) => promisify(execFile)("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args]);
+  const [main, linked, plain] = ["main", "linked", "plain"].map((name) => join(dir, name));
+  await git("init", "-q", main);
+  await git("-C", main, "commit", "-q", "--allow-empty", "-m", "x");
+  await git("-C", main, "worktree", "add", "-q", linked);
+  await Promise.all([mkdir(join(main, "src")), mkdir(join(linked, "src")), mkdir(join(plain, "sub"), { recursive: true }), symlink(plain, join(dir, "link"))]);
+  const before = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = dir;
+  /** Which of these directories am warns about, once Claude has `trusted` on record. */
+  const asks = async (...trusted: string[]) => {
+    await writeFile(join(dir, ".claude.json"), JSON.stringify({ projects: { [join(linked, "src")]: { hasTrustDialogAccepted: false }, ...Object.fromEntries(trusted.map((path) => [path, { hasTrustDialogAccepted: true }])) } }));
+    const dirs = [main, join(main, "src"), linked, join(linked, "src"), join(plain, "sub"), join(dir, "link", "sub")];
+    const warned = await Promise.all(dirs.map(async (cwd) => (await claude.preflight(cwd, [])).length > 0));
+    return dirs.filter((_, i) => warned[i]).map((path) => path.slice(dir.length + 1));
+  };
+  try {
+    assert.deepEqual(await asks(), ["main", "main/src", "linked", "linked/src", "plain/sub", "link/sub"]);
+    assert.deepEqual(await asks(main), ["plain/sub", "link/sub"]);
+    assert.deepEqual(await asks(dir), ["main", "main/src", "linked", "linked/src"], "a parent counts outside git only");
+    assert.deepEqual(await asks(plain), ["main", "main/src", "linked", "linked/src"]);
+    assert.deepEqual(await asks(join(main, "src")), ["main", "linked", "linked/src", "plain/sub", "link/sub"]);
+    await writeFile(join(dir, ".claude.json"), "{ not json");
+    assert.deepEqual(await claude.preflight(main, []), [], "unknown: nothing to warn about");
+  } finally {
+    if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = before;
   }
 });
 

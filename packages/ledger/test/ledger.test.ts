@@ -165,7 +165,7 @@ test("am ledger: the router writes title, who it waits on and the next step; am 
   assert.match(show, /^# Ledger: router\n\nUpdated: .* · 4 in progress · 1 queued · 0 for review/);
   assert.match(show, /### #1 修登录\n- Worker: fix-login \(profile claude, conversation 0199-live\) in \/work\/app — working\n- Waiting on: the worker\n- Next: 汇报后转告用户/);
   assert.match(show, /### #2 旧方案\n- Worker: old-one \(codex, conversation 0198-saved\) in \/work\/old — stopped/, "a stopped worker comes from am's saved record");
-  assert.match((await run(["list"])).stdout, /#1\s+active\s+修登录\s+fix-login \(working\)\s+the worker/);
+  assert.match((await run(["list"])).stdout, /#1\s+active\s+now\s+修登录\s+fix-login \(working\)\s+the worker/);
 
   assert.match((await run(["pause", "#2"])).stdout, /paused #2 旧方案/);
   // Paused tasks are listed only when asked for; the plain list says how many it leaves out.
@@ -176,7 +176,7 @@ test("am ledger: the router writes title, who it waits on and the next step; am 
   assert.doesNotMatch(listed, /旧方案/);
   assert.match(listed, /\n\(1 paused: am ledger list --paused\)\n$/);
   const paused = (await run(["list", "--paused"])).stdout;
-  assert.match(paused, /^ID .*\n#2\s+paused\s+旧方案\s+old-one \(stopped\)\n$/);
+  assert.match(paused, /^ID .*\n#2\s+paused\s+now\s+旧方案\s+old-one \(stopped\)\n$/);
   assert.equal((await run(["list", "--paused", "--router", "other"])).stdout.trim(), "no paused tasks");
   const both = await run(["list", "--paused", "--all"]);
   assert.deepEqual([both.code, both.stderr.trim()], [2, "am ledger: pass --paused or --all, not both"]);
@@ -191,6 +191,45 @@ test("am ledger: the router writes title, who it waits on and the next step; am 
   assert.equal((await run(["list"], { env: { AM_ROUTER: "other" } })).stdout.trim(), "no tasks", "$AM_ROUTER picks the ledger");
 });
 
+test("am ledger show <id> prints those tasks alone, and list says how long ago each was updated", async () => {
+  const { dir, run, calls } = await setup();
+  await run(["add", "修登录", "--worker", "fix-login", "--waiting", "the worker", "--note", "第一行"]);
+  await run(["add", "旧方案", "--worker", "old-one"]);
+  await run(["add", "没有 worker"]);
+  await run(["close", "2", "--note", "user: done"]);
+  const db = new DatabaseSync(join(dir, "ledger.db"));
+  const before = (days: number) => Date.now() - days * 86_400_000 - 60_000;
+  db.prepare("UPDATE tasks SET created_at = ?, updated_at = ? WHERE id = 1").run(before(9), before(3));
+  db.prepare("UPDATE tasks SET updated_at = ? WHERE id = 3").run(Date.now() - 5 * 3_600_000 - 1000);
+  db.close();
+  await calls();
+
+  const one = await run(["show", "#1"]);
+  assert.match(one.stdout, /^### #1 修登录\n- Status: in progress; added 9d ago \(.*\)\n- Worker: fix-login \(.*\) in \/work\/app — working\n- Waiting on: the worker\n- Updated: 3d ago \(\d{4}-\d\d-\d\d \d\d:\d\d\)\n- Notes: 第一行\n$/);
+  assert.deepEqual(await calls(), ["status fix-login --json"], "nothing is asked about other tasks' workers");
+  const two = (await run(["show", "2", "3"])).stdout;
+  assert.match(two, /^### #2 旧方案\n- Status: closed; added just now \(.*\), closed just now \(.*\)\n- Worker: old-one .* — stopped\n.*\n- Notes: user: done\n\n### #3 没有 worker\n/s);
+  assert.deepEqual([JSON.parse((await run(["show", "1", "--json"])).stdout).worker_state, JSON.parse((await run(["show", "1", "3", "--json"])).stdout).length], ["working", 2]);
+  const missing = await run(["show", "99"]);
+  assert.deepEqual([missing.code, missing.stderr], [1, "am ledger: no task #99\n"]);
+  assert.equal((await run(["show", "i7"])).code, 2);
+
+  const listed = (await run(["list"])).stdout;
+  assert.match(listed, /^ID\s+STATUS\s+UPDATED\s+TITLE/);
+  assert.match(listed, /#1\s+active\s+3d\s+修登录/);
+  assert.match(listed, /#3\s+active\s+5h\s+没有 worker/);
+  assert.match((await run(["show"])).stdout, /### #1 修登录\n[^#]*- Updated: 3d ago/);
+});
+
+test("output longer than a pipe holds arrives whole", async () => {
+  const { run } = await setup();
+  for (let i = 0; i < 6; i++) await run(["add", `任务${i}`, "--note", "很长的备注".repeat(4000)]);
+  const json = (await run(["list", "--json"])).stdout;
+  assert.ok(Buffer.byteLength(json) > 300_000);
+  assert.equal(JSON.parse(json).length, 6);
+  assert.equal((await run(["show"])).stdout.trimEnd().split("\n").at(-1), "(none)");
+});
+
 test("am ledger asks am about all workers at once, not once per task", async () => {
   const { run, calls } = await setup();
   assert.equal((await run(["add", "修登录", "--worker", "fix-login"])).code, 0);
@@ -203,12 +242,12 @@ test("am ledger asks am about all workers at once, not once per task", async () 
   assert.match(show.stdout, /old-one \(codex, conversation 0198-saved\) in \/work\/old — stopped/);
   assert.match(show.stdout, /nobody-knows — not known to am/);
   assert.deepEqual(await calls(), ["list --json", "list --saved --json"], "one list of running agents, one of saved ones");
-  assert.match((await run(["list"])).stdout, /#3\s+active\s+又一件\s+fix-login \(working\)/);
+  assert.match((await run(["list"])).stdout, /#3\s+active\s+now\s+又一件\s+fix-login \(working\)/);
   assert.deepEqual(await calls(), ["list --json", "list --saved --json"]);
 
   // When am list fails, the ledger still asks about each worker.
   const fallback = await run(["list"], { env: { AM_LIST_FAIL: "1" } });
-  assert.match(fallback.stdout, /#1\s+active\s+修登录\s+fix-login \(working\)/);
+  assert.match(fallback.stdout, /#1\s+active\s+now\s+修登录\s+fix-login \(working\)/);
   assert.deepEqual(await calls(), ["list --json", "status fix-login --json", "status old-one --json", "list --saved --json", "status nobody-knows --json"]);
 });
 
@@ -319,7 +358,7 @@ test("am ledger import brings an old LEDGER.md over once", async () => {
   const first = await run(["import", file]);
   assert.match(first.stdout, /imported 2 task\(s\) into router's ledger from .*LEDGER\.md: 1 in progress, 1 queued or paused/);
   assert.match((await run(["import", file])).stdout, /imported 0 task\(s\)[\s\S]*skipped \(already in the ledger\): 修登录\nskipped \(already in the ledger\): 旧方案/);
-  assert.match((await run(["show"])).stdout, /### #2 旧方案 \(paused\)\n- Worker: none\n- Notes: Status before the move to SQLite: paused/);
+  assert.match((await run(["show"])).stdout, /### #2 旧方案 \(paused\)\n- Worker: none\n- Updated: just now \(.*\)\n- Notes: Status before the move to SQLite: paused/);
 });
 
 test("am ledger closes the database, so ledger.db itself holds every write", async () => {

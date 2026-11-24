@@ -28,15 +28,17 @@ import {
   type TaskFields,
 } from "./db.ts";
 import { parseLedger } from "./importer.ts";
-import { renderLedger, workerLine } from "./render.ts";
+import { age, renderLedger, renderTask, workerLine } from "./render.ts";
 import { loadLiveWorkers, workerInfo, type WorkerInfo } from "./workers.ts";
 
 const USAGE = `am ledger — the router's ledger of work in flight, and the messages watchers put up for the user (SQLite)
 
   am ledger show                         The ledger as markdown: tasks in progress and queued, each worker's live
                                          state, and the messages waiting for the user's review
+  am ledger show <id>...                 Only these tasks, in full, whatever their status
   am ledger list [--paused | --all]      Tasks in progress and queued, one line each (--paused: the paused ones
-                                         instead; --all: every task, paused and closed ones too)
+                                         instead; --all: every task, paused and closed ones too), with how long ago
+                                         each was last updated
   am ledger add <title> [--worker NAME] [--waiting TEXT] [--next TEXT] [--note TEXT] [--queue]
                                          A task in progress (--queue: waiting in the queue, if the user wants it
                                          there). The worker's kind, profile, conversation id and state come from am
@@ -245,6 +247,14 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case "show": {
+      if (positionals.length) {
+        const chosen = positionals.map((text) => getTask(db, id(text, "#", "show")));
+        if (new Set(chosen.map((t) => t.worker).filter(Boolean)).size > 1) loadLiveWorkers();
+        const shown = chosen.map((task) => ({ task, info: task.worker ? workerInfo(task.worker) : undefined }));
+        const data = shown.map(({ task, info }) => ({ ...task, worker_state: info?.state ?? null }));
+        out(data.length === 1 ? data[0] : data, shown.map(({ task, info }) => renderTask(task, info)).join("\n\n"));
+        return 0;
+      }
       const tasks = listTasks(db, router);
       out({ tasks, inbox: listEntries(db, router) }, renderLedger(router, tasks, listEntries(db, router), infoFor(tasks)).trimEnd());
       return 0;
@@ -267,7 +277,7 @@ async function main(argv: string[]): Promise<number> {
         }
         return `${kept}…`;
       };
-      const rows = [["ID", "STATUS", "TITLE", "WORKER", "WAITING ON"], ...tasks.map((t) => [`#${t.id}`, t.status, cut(t.title, 32), t.worker ? `${t.worker} (${info(t)?.state ?? "unknown"})` : "-", cut(t.waiting, 60)])];
+      const rows = [["ID", "STATUS", "UPDATED", "TITLE", "WORKER", "WAITING ON"], ...tasks.map((t) => [`#${t.id}`, t.status, age(t.updated_at), cut(t.title, 32), t.worker ? `${t.worker} (${info(t)?.state ?? "unknown"})` : "-", cut(t.waiting, 60)])];
       const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => cells(r[i]))));
       const text = tasks.length ? rows.map((r) => r.map((c, i) => c + " ".repeat(widths[i] - cells(c))).join("  ").trimEnd()).join("\n") : values.paused ? "no paused tasks" : "no tasks";
       const hint = hidden ? `\n(${hidden} paused: am ledger list --paused${values.router ? ` --router ${router}` : ""})` : "";
@@ -336,8 +346,15 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
+/** Exits once everything written has gone out: a pipe takes 64 KB at a time, and process.exit drops the rest. */
+function finish(code: number): void {
+  // The reader closed the pipe (| head): nothing more to say.
+  process.stdout.once("error", () => process.exit(code));
+  process.stdout.write("", () => process.exit(code));
+}
+
 main(process.argv.slice(2)).then(
-  (code) => process.exit(code),
+  finish,
   (error: unknown) => {
     const code = error instanceof LedgerError ? error.code : String((error as NodeJS.ErrnoException)?.code).startsWith("ERR_PARSE_ARGS") ? "usage" : "error";
     const message = error instanceof Error ? error.message : String(error);
